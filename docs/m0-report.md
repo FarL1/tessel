@@ -22,8 +22,8 @@
 | 2 | 隐藏窗口常驻内存、热键唤起延迟、冷启动 | `spikes/popup-paste`、`spikes/startup-probe` | 🟡 唤起延迟 ✅；**内存、冷启动未达标** | 见下文分析 |
 | 3 | 远程桌面、虚拟机下 D3D11 能否运行 | 复用 #1 | ⚪ 未开始 | |
 | 4 | 剪贴板全格式采集 + 隐私标记 | `spikes/clip-capture` | ✅ 通过 | 事件驱动可行；**必须防抖合并通知** |
-| 5 | 焦点还原 + SendInput 粘贴成功率 | `spikes/popup-paste` | 🔴 **Enter 没有触发粘贴**，待排查 | |
-| 6 | 托盘 + 全局热键 + Mica | `spikes/popup-paste` | 🟡 全局热键 ✅；托盘、Mica 视觉效果未验证 | |
+| 5 | 焦点还原 + SendInput 粘贴成功率 | `spikes/popup-paste` | ✅ 自动化 3/3 成功；**真实键盘待你验证** | 切焦点 3ms，粘贴总耗时约 50ms |
+| 6 | 托盘 + 全局热键 + Mica | `spikes/popup-paste` | 🟡 热键 ✅、Mica + 圆角 ✅；托盘未做 | 托盘参考 Ropy，风险低 |
 | 7 | SQLite FTS5 trigram 10 万条搜索耗时 | `spikes/search-bench` | ✅ 通过（方案 B） | **rowid 按时间排序 + 长短词分流**，P50 0.27ms |
 
 ---
@@ -217,33 +217,37 @@ release 构建（14.6MB），3 次：窗口出现分别用了 3290 / 2548 / 2375
 
 ---
 
-## #5 / #6 热键 + 粘贴闭环（🔴 发现问题，待排查）
+## #5 / #6 热键 + 粘贴闭环（✅ 自动化通过，真实键盘待验证）
 
-程序：`spikes/popup-paste`。启动后窗口隐藏，`Alt+V` 唤起，`↑↓` 选择，`Enter` 粘贴回之前的窗口，`Esc` 关闭。
+程序：`spikes/popup-paste`（同时也是界面原型，见 `docs/images/popup-*.png`）。测试脚本：`spikes/popup-paste/tests/`。
 
-### 已验证
+### 结果（2026-11-24，debug 构建，依赖已开优化）
 
-- ✅ `global-hotkey` 在 GPUI 主线程上能正常工作（它的隐藏窗口由 GPUI 的消息循环派发消息）。
-- ✅ `WindowKind::PopUp` → `WS_EX_TOOLWINDOW | WS_EX_TOPMOST`：不出现在任务栏，始终置顶。
-- ✅ 收到热键后弹窗能拿到前台（`WM_HOTKEY` 会赋予前台权限），正确记录了来源窗口。
-- ⚠️ GPUI 在 Windows 上的 `App::hide()` 是**空实现**，显示和隐藏都必须拿到原生 HWND，直接调用 `ShowWindow`。
+| 场景 | 结果 |
+|---|---|
+| `Alt+V` → `↓↓` → `Enter` | ✅ 6 行代码原样粘贴（缩进、换行都保留） |
+| `Alt+V` → 输入"上海" → `Enter` | ✅ 粘贴了收货地址 |
+| `Alt+V` → `Tab Tab`（切到"链接"）→ `Enter` | ✅ 粘贴了链接 |
+| 唤起 → `Esc`，循环 10 次 | ✅ 10/10 |
+| 热键 → 首帧（13 次） | **25–46ms，中位数约 38ms** ✅（目标 < 50ms） |
+| 切回目标窗口 | 3.1–3.2ms |
+| 粘贴总耗时（写剪贴板 → 隐藏 → 切焦点 → Ctrl+V） | 48–53ms |
 
-### 问题：Enter 没有触发粘贴
+### 踩过的坑（都已解决，是 M1 的设计约束）
 
-自动化测试（测试窗口 → `Alt+V` → `↓ ↓ Enter`）：弹窗出现并拿到了前台，但日志里没有 `PressEnter`/`[paste]`，剪贴板为空，焦点也没有回到测试窗口。
+1. **不要对弹窗调用 GPUI 的 `window.activate_window()`**。它在 Windows 上是异步执行的，会重新应用窗口创建时保存的位置状态，还会**注入一次假的 Alt 键**来绕过前台锁。
+   → 窗口以 `show: true` 创建后立刻用 Win32 隐藏；显示、隐藏、定位全部由我们自己的 Win32 层负责。
+2. **必须自己调用 `SetFocus(hwnd)`**。GPUI 处理 `WM_ACTIVATE` 时不会把键盘焦点交给窗口（它的 `activate()` 会显式 `SetFocus`，而我们绕开了它）。缺了这一步，窗口在前台，按键却到不了它。
+3. **窗口激活时要重新聚焦搜索框**。GPUI 处理激活时会重置内部焦点，而激活事件可能晚于我们的 `show()` 到达。
+4. **按键要走"动作 + 键位表"**，不能只用按键监听器。gpui-kit 的 Root 把 `tab` 绑定成了焦点导航，输入框把 `up/down/enter/tab` 绑定成了自己的动作，动作绑定会先于监听器执行。
+   → 定义 `SelectNext`、`NextFilter`、`PasteSelected` 等具名动作，用 `ClipPopup > Input` 谓词绑定，并且在 `gpui_kit::init` **之后**注册（同一深度以后注册的为准）。这样做还顺带获得了"快捷键可自定义"的能力。
+5. GPUI 在 Windows 上的 `App::hide()` 是空实现。
 
-**根因分析（读源码，待复测确认）**：输入框处理 `Enter` 的逻辑本身没问题（单行模式下收到 `Enter` action 就会发出 `PressEnter`），问题出在窗口的显示和激活流程上。GPUI 0.3.12 在 Windows 上的 `Window::activate_window()`（`gpui-pre-windows/src/window.rs`）：
+### ⚠️ 未解决：弹窗在前台时，`SendInput` 注入的按键会丢失
 
-1. **是异步执行的**（`executor.spawn`），会在我们同步的显示逻辑之后才执行。
-2. 窗口以 `show: false` 创建时，GPUI 会把 `WINDOWPLACEMENT` 存到 `initial_placement`，**第一次 activate 时再异步调用 `SetWindowPlacement`**，这会打乱我们用 `ShowWindow` 设置好的显示状态。
-3. 它会**通过 `SendInput` 注入一次 Alt 键的按下和松开**来绕过前台锁。这个假 Alt 会发给当时的前台窗口，可能激活其他程序的菜单栏。
+现象：弹窗在前台时，通过 `SendInput` / `keybd_event` 注入的按键（方向键、字母，甚至全局热键 `Alt+V`）**全部没有效果**。注入调用本身返回成功（不是 UIPI 拦截），而 `PostMessage` 直接投递给弹窗的按键一切正常。弹窗不在前台时，注入的 `Alt+V` 能正常触发热键。
 
-**修复（已实现，待复测）**：
-- 窗口以 `show: true, focus: false` 创建，在构建闭包里立刻用 `ShowWindow(SW_HIDE)` 隐藏（首帧之前，不会闪烁），这样 GPUI 就不会保存延迟应用的位置状态。
-- **弹出面板绝不调用 `window.activate_window()`**。收到 `WM_HOTKEY` 时进程本来就有前台权限，直接 `ShowWindow` + `SetForegroundWindow`，再用 GPUI 的 `focus()` 设置输入框焦点。
+已排除：窗口类型（PopUp/Normal）、背景（Mica/不透明）、Win32 焦点（`GetGUIThreadInfo` 显示前台、激活、焦点都是弹窗）、GPUI 消息循环（标准 `GetMessageW`）。
 
-→ **M1 设计约束**：弹出窗口的显示、隐藏、激活、定位全部由我们自己的 Win32 层管理，GPUI 只负责渲染和输入。
+猜测：和弹窗线程上的中文输入法（TSF）对注入按键的处理有关。**关键问题是真实键盘会不会受影响**，需要人工验证。自动化测试目前改用 `PostMessage` 驱动弹窗内的操作，绕开了这个问题。
 
-已经在程序里加了按键、激活状态变化、`PressEnter` 三处日志。测试脚本放在 `spikes/popup-paste/tests/`，在**你不用电脑的时候**运行即可复测。
-
-> 自动化测试中断的原因：检测到你在前台运行游戏，为了不干扰你，停止了所有会弹窗或模拟按键的测试。测试脚本每一步都会检查前台窗口，不是测试窗口就中止，不会把按键发给你正在使用的程序。

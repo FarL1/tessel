@@ -4,7 +4,13 @@
 
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{HANDLE, HWND};
+use windows::Win32::Foundation::{HANDLE, HWND, POINT, RECT};
+use windows::Win32::Graphics::Dwm::{
+    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
+};
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
 };
@@ -12,12 +18,12 @@ use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, Glo
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
 use windows::Win32::System::Threading::GetCurrentProcess;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
-    VIRTUAL_KEY, VK_CONTROL, VK_V,
+    GetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP,
+    SendInput, SetFocus, VIRTUAL_KEY, VK_CONTROL, VK_V,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowTextW, IsWindow, SW_HIDE, SW_SHOW, SetForegroundWindow,
-    ShowWindow,
+    GetCursorPos, GetForegroundWindow, GetWindowRect, GetWindowTextW, HWND_TOPMOST, IsWindow,
+    SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOSIZE, SetForegroundWindow, SetWindowPos, ShowWindow,
 };
 
 const CF_UNICODETEXT: u32 = 13;
@@ -36,10 +42,16 @@ pub fn window_title(raw: isize) -> String {
     String::from_utf16_lossy(&buf[..n.max(0) as usize])
 }
 
-pub fn show_and_focus(raw: isize) {
+/// 显示窗口、切到前台并设置键盘焦点。返回之后键盘焦点是否在这个窗口上。
+///
+/// GPUI 自己处理 WM_ACTIVATE 时不会把键盘焦点交给窗口（它的 activate() 会显式 SetFocus），
+/// 我们绕开了 activate()，所以必须自己调用 SetFocus，否则按键不会发到这个窗口。
+pub fn show_and_focus(raw: isize) -> bool {
     unsafe {
         let _ = ShowWindow(hwnd(raw), SW_SHOW);
         let _ = SetForegroundWindow(hwnd(raw));
+        let _ = SetFocus(Some(hwnd(raw)));
+        GetFocus().0 as isize == raw
     }
 }
 
@@ -53,6 +65,54 @@ pub fn focus(raw: isize) {
 pub fn hide(raw: isize) {
     unsafe {
         let _ = ShowWindow(hwnd(raw), SW_HIDE);
+    }
+}
+
+/// Windows 11 圆角（无边框弹窗默认是直角）
+pub fn round_corners(raw: isize) {
+    let pref = DWMWCP_ROUND;
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd(raw),
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &pref as *const _ as *const _,
+            std::mem::size_of_val(&pref) as u32,
+        );
+    }
+}
+
+/// 把窗口放到鼠标所在显示器工作区的水平居中、垂直偏上（约 1/4 处）
+pub fn center_on_cursor_monitor(raw: isize) {
+    unsafe {
+        let mut cursor = POINT::default();
+        if GetCursorPos(&mut cursor).is_err() {
+            return;
+        }
+        let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return;
+        }
+        let mut rect = RECT::default();
+        if GetWindowRect(hwnd(raw), &mut rect).is_err() {
+            return;
+        }
+        let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
+        let work = info.rcWork;
+        let x = work.left + (work.right - work.left - w) / 2;
+        let y = work.top + ((work.bottom - work.top - h) as f32 * 0.28) as i32;
+        let _ = SetWindowPos(
+            hwnd(raw),
+            Some(HWND_TOPMOST),
+            x,
+            y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOACTIVATE,
+        );
     }
 }
 

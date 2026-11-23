@@ -10,6 +10,8 @@ $f.Controls.Add($tb)
 $script:deadline = (Get-Date).AddSeconds($seconds)
 $timer = New-Object Windows.Forms.Timer; $timer.Interval = 200
 $timer.Add_Tick({
+  # 每次都写入当前内容，这样即使窗口被强制关闭，结果也不会丢
+  [IO.File]::WriteAllText($out, $tb.Text, [Text.Encoding]::UTF8)
   if ((Get-Date) -ge $script:deadline) {
     $timer.Stop()
     [IO.File]::WriteAllText($out, $tb.Text, [Text.Encoding]::UTF8)
