@@ -1,0 +1,15 @@
+[package]
+name = "spike-webview-baseline"
+description = "M0 memory baseline: same popup layout rendered with wry/WebView2 (what Tauri uses)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+wry = "0.57"
+tao = "0.37"
+
+[lints]
+workspace = true
