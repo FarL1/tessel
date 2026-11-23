@@ -15,7 +15,7 @@ $repo = Split-Path -Parent $PSScriptRoot
 if (-not $NoBuild) {
     Write-Host '==> 编译 release 版（首次需要约 10 分钟）'
     Push-Location $repo
-    try { cargo build -p spike-popup-paste --release; if ($LASTEXITCODE -ne 0) { throw '编译失败' } }
+    try { cargo build -p tessel --release; if ($LASTEXITCODE -ne 0) { throw '编译失败' } }
     finally { Pop-Location }
 }
 

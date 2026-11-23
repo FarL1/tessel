@@ -1,0 +1,29 @@
+#pragma code_page(65001)
+// 应用图标：资源序号 1。exe 文件图标、桌面快捷方式、托盘图标都从这里加载。
+1 ICON "../../assets/brand/tessel.ico"
+
+// 版本信息：任务管理器、文件属性、Tessel 自己的"来源应用"识别都读这里的 FileDescription
+1 VERSIONINFO
+FILEVERSION 0,1,0,0
+PRODUCTVERSION 0,1,0,0
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "CompanyName", "Tessel contributors"
+            VALUE "FileDescription", "Tessel 拼贴"
+            VALUE "ProductName", "Tessel 拼贴"
+            VALUE "FileVersion", "0.1.0"
+            VALUE "ProductVersion", "0.1.0"
+            VALUE "OriginalFilename", "tessel.exe"
+            VALUE "LegalCopyright", "MIT OR Apache-2.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0804, 1200
+    END
+END

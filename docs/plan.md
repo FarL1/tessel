@@ -259,6 +259,23 @@ UI 技术待定：Android 用 Jetpack Compose，iOS 用 SwiftUI，这是最自�
 
 ### M1：Windows 本地 MVP
 
+**进度（2026-11-24）**
+
+- [x] 代码结构：`crates/tessel-core`（模型、识别、存储、搜索）、`crates/tessel-clipboard`（Windows 采集与写回）、`apps/tessel`（GPUI 界面）
+- [x] 采集：事件驱动 + 40ms 防抖；文件 > 文本 > 图片；隐私标记跳过；来源应用名取自 exe 版本信息
+- [x] 存储：SQLite WAL，seq 即最近使用顺序，内容哈希去重并提到最前，图片按哈希存 PNG，自动清理（默认保留 5000 条未收藏）
+- [x] 搜索：FTS5 trigram + 短词 LIKE，分类筛选，结果高亮
+- [x] 识别：链接、颜色（#RGB/#RRGGBB/#RRGGBBAA/rgb()/hsl()）、代码（Rust/Python/JS/SQL/JSON/HTML…）
+- [x] 粘贴：按类型写回（文本 / 文件 CF_HDROP / 图片 PNG + CF_DIB），切回原窗口并模拟 Ctrl+V
+- [x] 收藏（Ctrl+P）、删除（Shift+Del）、打开（Ctrl+O）、暂停记录（点击"记录中"）
+- [x] 窗口可拖动并记住位置；托盘菜单可重置位置
+- [x] 托盘、单实例、开机即显示（`--background` 静默启动）、exe 图标与版本信息、本地安装脚本
+- [ ] 设置页（热键、保留条数、忽略的应用、开机自启）+ 配置文件
+- [ ] 开机自启
+- [ ] 列表换成虚拟列表（目前一次加载 300 条）
+- [ ] 富文本（HTML/RTF）保留与"粘贴为纯文本"
+- [ ] 安装包（MSI/NSIS）
+
 - 采集 → 去重 → 入库 → 列表 → 搜索 → 粘贴，完整闭环
 - 键盘流基础操作（5.1 节表格中除动作菜单以外的部分）
 - 置顶、收藏、删除；隐私规则；暂停记录

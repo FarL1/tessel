@@ -1,6 +1,6 @@
 [package]
-name = "spike-popup-paste"
-description = "Tessel · 拼贴 prototype: hidden GPUI popup, global hotkey, tray, focus restore + paste"
+name = "tessel"
+description = "Tessel · 拼贴 — native, keyboard-first clipboard manager (desktop app)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +13,8 @@ name = "tessel"
 path = "src/main.rs"
 
 [dependencies]
+tessel-core.workspace = true
+tessel-clipboard.workspace = true
 gpui-kit.workspace = true
 global-hotkey = "0.10"
 async-channel = "2"

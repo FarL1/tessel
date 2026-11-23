@@ -2,6 +2,7 @@
 
 use std::ops::Range;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use gpui_kit::base::{h_flex, v_flex};
@@ -9,8 +10,10 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, Theme};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
+use tessel_clipboard::WriteContent;
+use tessel_core::time::{now_ms, relative as relative_time};
+use tessel_core::{Clip, Counts, Filter, Kind, Store};
 
-use crate::data::{Clip, FILTERS, Kind, sample_clips};
 use crate::design::{self, Palette, parse_hex_color};
 use crate::{debug_log, log_line, win};
 
@@ -23,34 +26,41 @@ actions!(
         PrevFilter,
         Dismiss,
         PasteSelected,
-        PastePlainText
+        PastePlainText,
+        TogglePin,
+        DeleteClip,
+        OpenClip
     ]
 );
 
 const CONTEXT: &str = "ClipPopup";
+/// 一次最多加载的条数（列表是普通滚动列表，M2 换成虚拟列表后再放开）
+const RESULT_LIMIT: usize = 300;
+/// 预览区最多显示的字符数，避免超长文本拖慢渲染
+const PREVIEW_CHARS: usize = 8_000;
 
 /// 弹窗的键位表。正式版本里会从用户配置文件加载，允许自定义。
 ///
 /// 谓词写成 `ClipPopup > Input`：焦点在搜索框里时，搜索框自身也绑定了 up/down/enter/tab，
 /// 同一深度的绑定以后注册的为准，所以这些绑定必须在 `gpui_kit::init` 之后注册。
 pub fn bind_keys(cx: &mut App) {
-    let in_popup = Some("ClipPopup > Input");
-    cx.bind_keys([
-        KeyBinding::new("up", SelectPrev, in_popup),
-        KeyBinding::new("down", SelectNext, in_popup),
-        KeyBinding::new("tab", NextFilter, in_popup),
-        KeyBinding::new("shift-tab", PrevFilter, in_popup),
-        KeyBinding::new("escape", Dismiss, in_popup),
-        KeyBinding::new("enter", PasteSelected, in_popup),
-        KeyBinding::new("shift-enter", PastePlainText, in_popup),
-        KeyBinding::new("up", SelectPrev, Some(CONTEXT)),
-        KeyBinding::new("down", SelectNext, Some(CONTEXT)),
-        KeyBinding::new("tab", NextFilter, Some(CONTEXT)),
-        KeyBinding::new("shift-tab", PrevFilter, Some(CONTEXT)),
-        KeyBinding::new("escape", Dismiss, Some(CONTEXT)),
-        KeyBinding::new("enter", PasteSelected, Some(CONTEXT)),
-        KeyBinding::new("shift-enter", PastePlainText, Some(CONTEXT)),
-    ]);
+    let mut bindings = Vec::new();
+    for ctx in ["ClipPopup > Input", CONTEXT] {
+        let c = Some(ctx);
+        bindings.extend([
+            KeyBinding::new("up", SelectPrev, c),
+            KeyBinding::new("down", SelectNext, c),
+            KeyBinding::new("tab", NextFilter, c),
+            KeyBinding::new("shift-tab", PrevFilter, c),
+            KeyBinding::new("escape", Dismiss, c),
+            KeyBinding::new("enter", PasteSelected, c),
+            KeyBinding::new("shift-enter", PastePlainText, c),
+            KeyBinding::new("ctrl-p", TogglePin, c),
+            KeyBinding::new("shift-delete", DeleteClip, c),
+            KeyBinding::new("ctrl-o", OpenClip, c),
+        ]);
+    }
+    cx.bind_keys(bindings);
 }
 
 pub struct Popup {
@@ -58,21 +68,36 @@ pub struct Popup {
     visible: bool,
     /// 弹出前的前台窗口，粘贴时切回它
     prev_foreground: Option<isize>,
+    store: Store,
+    paused: Arc<AtomicBool>,
     search: Entity<InputState>,
     query: String,
-    clips: Vec<Clip>,
     filter_ix: usize,
-    /// 在当前可见结果中的位置
+    items: Vec<Clip>,
+    counts: Counts,
+    /// 在当前结果中的位置
     selected: usize,
+    /// 渲染时用的"现在"，用来算"5 分钟前"
+    now: i64,
     show_count: usize,
     scroll: ScrollHandle,
     status: Option<SharedString>,
     logo: Arc<Image>,
+    /// 上次自动摆放的位置；隐藏时如果窗口不在这里，说明用户拖动过
+    placed_at: Option<(i32, i32)>,
+    /// 用户拖动后的位置，下次唤起时沿用
+    user_pos: Option<(i32, i32)>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Popup {
-    pub fn new(hwnd: isize, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        hwnd: isize,
+        store: Store,
+        paused: Arc<AtomicBool>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("搜索剪贴板历史…"));
 
         let subscriptions = vec![
@@ -81,7 +106,7 @@ impl Popup {
                     this.query = state.read(cx).value().to_string();
                     this.selected = 0;
                     this.scroll.scroll_to_item(0);
-                    cx.notify();
+                    this.refresh(cx);
                 }
             }),
             cx.observe_window_activation(window, |this, window, cx| {
@@ -104,15 +129,19 @@ impl Popup {
             }),
         ];
 
-        Self {
+        let mut this = Self {
             hwnd,
             visible: false,
             prev_foreground: None,
+            store,
+            paused,
             search,
             query: String::new(),
-            clips: sample_clips(),
             filter_ix: 0,
+            items: Vec::new(),
+            counts: Counts::default(),
             selected: 0,
+            now: now_ms(),
             show_count: 0,
             scroll: ScrollHandle::new(),
             status: None,
@@ -120,28 +149,50 @@ impl Popup {
                 ImageFormat::Png,
                 include_bytes!("../../../assets/brand/png/tessel-64.png").to_vec(),
             )),
+            placed_at: None,
+            user_pos: None,
             _subscriptions: subscriptions,
+        };
+        this.refresh(cx);
+        this
+    }
+
+    fn filter(&self) -> Filter {
+        Filter::ALL[self.filter_ix]
+    }
+
+    /// 按当前搜索词和分类重新查询
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        let t0 = Instant::now();
+        match self.store.search(&self.query, self.filter(), RESULT_LIMIT) {
+            Ok(items) => self.items = items,
+            Err(err) => log_line(format!("[store] 搜索失败：{err}")),
+        }
+        if let Ok(counts) = self.store.counts() {
+            self.counts = counts;
+        }
+        if self.selected >= self.items.len() {
+            self.selected = self.items.len().saturating_sub(1);
+        }
+        self.now = now_ms();
+        debug_log(format!(
+            "[store] 查询「{}」{} 条 · {:.2}ms",
+            self.query,
+            self.items.len(),
+            t0.elapsed().as_secs_f64() * 1000.0
+        ));
+        cx.notify();
+    }
+
+    /// 采集线程写入了新内容
+    pub fn on_clipboard_changed(&mut self, cx: &mut Context<Self>) {
+        if self.visible {
+            self.refresh(cx);
         }
     }
 
-    /// 当前筛选和搜索条件下可见的条目（clips 的下标）
-    fn visible_items(&self) -> Vec<usize> {
-        let filter = FILTERS[self.filter_ix];
-        let terms: Vec<String> = self
-            .query
-            .split_whitespace()
-            .map(|t| t.to_ascii_lowercase())
-            .collect();
-        self.clips
-            .iter()
-            .enumerate()
-            .filter(|(_, clip)| filter.matches(clip))
-            .filter(|(_, clip)| {
-                let hay = format!("{} {}", clip.content, clip.source).to_ascii_lowercase();
-                terms.iter().all(|t| hay.contains(t.as_str()))
-            })
-            .map(|(i, _)| i)
-            .collect()
+    pub fn reset_position(&mut self) {
+        self.user_pos = None;
     }
 
     /// 托盘点击、再次启动：只负责显示，已经显示时保持不动
@@ -167,10 +218,20 @@ impl Popup {
         self.filter_ix = 0;
         self.status = None;
         self.show_count += 1;
+        self.query.clear();
         self.scroll.scroll_to_item(0);
+        self.refresh(cx);
 
-        // 出现在鼠标所在显示器的偏上位置（类似 Spotlight）
-        win::center_on_cursor_monitor(self.hwnd);
+        // 用户拖动过就沿用那个位置（如果还在某块屏幕上），否则放在鼠标所在屏幕的偏上位置
+        match self.user_pos.filter(|&p| win::is_on_screen(p)) {
+            Some(pos) => win::move_to(self.hwnd, pos),
+            None => {
+                self.user_pos = None;
+                win::center_on_cursor_monitor(self.hwnd);
+            }
+        }
+        self.placed_at = win::window_pos(self.hwnd);
+
         // 注意：不要调用 window.activate_window()。GPUI 在 Windows 上的实现是异步的，
         // 会重新应用创建时的窗口位置状态，还会注入一次 Alt 键。收到 WM_HOTKEY 时我们本身就有前台权限。
         if !win::show_and_focus(self.hwnd) {
@@ -180,7 +241,6 @@ impl Popup {
             state.set_value("", window, cx);
             state.focus(window, cx);
         });
-        self.query.clear();
 
         let shown = t0.elapsed();
         let view = cx.entity().downgrade();
@@ -197,47 +257,72 @@ impl Popup {
         cx.notify();
     }
 
+    fn remember_position(&mut self) {
+        let current = win::window_pos(self.hwnd);
+        if current.is_some() && current != self.placed_at {
+            self.user_pos = current;
+        }
+    }
+
     /// `restore_focus`：Esc / 热键关闭时把焦点还给之前的窗口；点击外部时不需要
     fn hide(&mut self, restore_focus: bool, cx: &mut Context<Self>) {
         if !self.visible {
             return;
         }
+        self.remember_position();
         self.visible = false;
         win::hide(self.hwnd);
         if restore_focus && let Some(prev) = self.prev_foreground {
             win::focus(prev);
         }
         let (ws, private) = win::memory_mb();
-        log_line(format!("[hide] 工作集 {ws:.1}MB · 私有 {private:.1}MB"));
+        debug_log(format!("[hide] 工作集 {ws:.1}MB · 私有 {private:.1}MB"));
         cx.notify();
     }
 
-    fn paste(&mut self, clip_ix: usize, plain: bool, cx: &mut Context<Self>) {
-        let text = self.clips[clip_ix].content;
-        let Some(target) = self.prev_foreground.take() else {
-            let _ = win::set_clipboard_text(self.hwnd, text);
-            self.status = Some("已复制到剪贴板（没有记录到来源窗口）".into());
-            cx.notify();
+    fn write_to_clipboard(&self, clip: &Clip) -> Result<(), String> {
+        let owner = Some(self.hwnd);
+        match clip.kind {
+            Kind::File => {
+                tessel_clipboard::write(owner, WriteContent::Files(clip.files().collect()))
+            }
+            Kind::Image => {
+                let path = &clip.image.as_ref().ok_or("图片文件丢失")?.path;
+                let png = std::fs::read(path).map_err(|e| format!("读取图片失败：{e}"))?;
+                tessel_clipboard::write(owner, WriteContent::ImagePng(&png))
+            }
+            _ => tessel_clipboard::write(owner, WriteContent::Text(&clip.content)),
+        }
+    }
+
+    fn paste(&mut self, pos: usize, plain: bool, cx: &mut Context<Self>) {
+        let Some(clip) = self.items.get(pos).cloned() else {
             return;
         };
-
         let t0 = Instant::now();
-        if let Err(err) = win::set_clipboard_text(self.hwnd, text) {
+        if let Err(err) = self.write_to_clipboard(&clip) {
             self.status = Some(format!("写入剪贴板失败：{err}").into());
             cx.notify();
             return;
         }
+        let Some(target) = self.prev_foreground.take() else {
+            self.status = Some("已复制到剪贴板".into());
+            cx.notify();
+            return;
+        };
+        self.remember_position();
         self.visible = false;
         win::hide(self.hwnd);
         let report = win::restore_and_paste(target);
         log_line(format!(
-            "[paste] {}{} 目标「{}」· 切换焦点 {:.1}ms · 总耗时 {:.1}ms",
+            "[paste] {}{} {} → 「{}」· 切换焦点 {:.1}ms · 总耗时 {:.1}ms",
             if report.focused {
                 "✅"
             } else {
                 "❌ 无法切回目标窗口"
             },
             if plain { "（纯文本）" } else { "" },
+            clip.kind.label(),
             report.target_title,
             report.focus_ms,
             t0.elapsed().as_secs_f64() * 1000.0,
@@ -245,14 +330,8 @@ impl Popup {
         cx.notify();
     }
 
-    fn paste_nth(&mut self, nth: usize, plain: bool, cx: &mut Context<Self>) {
-        if let Some(&clip_ix) = self.visible_items().get(nth) {
-            self.paste(clip_ix, plain, cx);
-        }
-    }
-
     fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let len = self.visible_items().len();
+        let len = self.items.len();
         if len == 0 {
             return;
         }
@@ -262,9 +341,23 @@ impl Popup {
     }
 
     fn select_filter(&mut self, ix: usize, cx: &mut Context<Self>) {
-        self.filter_ix = ix % FILTERS.len();
+        self.filter_ix = ix % Filter::ALL.len();
         self.selected = 0;
         self.scroll.scroll_to_item(0);
+        self.refresh(cx);
+    }
+
+    fn toggle_pause(&mut self, cx: &mut Context<Self>) {
+        let paused = !self.paused.load(Ordering::Relaxed);
+        self.paused.store(paused, Ordering::Relaxed);
+        self.status = Some(
+            if paused {
+                "已暂停记录"
+            } else {
+                "已恢复记录"
+            }
+            .into(),
+        );
         cx.notify();
     }
 
@@ -274,7 +367,7 @@ impl Popup {
         let mods = &event.keystroke.modifiers;
         debug_log(format!("[event] key_down {key:?} {mods:?}"));
         if mods.control && key.len() == 1 && (b'1'..=b'9').contains(&key.as_bytes()[0]) {
-            self.paste_nth((key.as_bytes()[0] - b'1') as usize, mods.shift, cx);
+            self.paste((key.as_bytes()[0] - b'1') as usize, mods.shift, cx);
             cx.stop_propagation();
         }
     }
@@ -292,7 +385,7 @@ impl Popup {
     }
 
     fn on_prev_filter(&mut self, _: &PrevFilter, _: &mut Window, cx: &mut Context<Self>) {
-        self.select_filter(self.filter_ix + FILTERS.len() - 1, cx);
+        self.select_filter(self.filter_ix + Filter::ALL.len() - 1, cx);
     }
 
     fn on_dismiss(&mut self, _: &Dismiss, _: &mut Window, cx: &mut Context<Self>) {
@@ -300,11 +393,71 @@ impl Popup {
     }
 
     fn on_paste(&mut self, _: &PasteSelected, _: &mut Window, cx: &mut Context<Self>) {
-        self.paste_nth(self.selected, false, cx);
+        self.paste(self.selected, false, cx);
     }
 
     fn on_paste_plain(&mut self, _: &PastePlainText, _: &mut Window, cx: &mut Context<Self>) {
-        self.paste_nth(self.selected, true, cx);
+        self.paste(self.selected, true, cx);
+    }
+
+    fn on_toggle_pin(&mut self, _: &TogglePin, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(clip) = self.items.get(self.selected) else {
+            return;
+        };
+        let pinned = !clip.pinned;
+        if let Err(err) = self.store.set_pinned(&clip.uuid, pinned) {
+            self.status = Some(format!("操作失败：{err}").into());
+        } else {
+            self.status = Some(
+                if pinned {
+                    "已收藏"
+                } else {
+                    "已取消收藏"
+                }
+                .into(),
+            );
+        }
+        self.refresh(cx);
+    }
+
+    fn on_delete(&mut self, _: &DeleteClip, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(clip) = self.items.get(self.selected) else {
+            return;
+        };
+        if let Err(err) = self.store.delete(&clip.uuid) {
+            self.status = Some(format!("删除失败：{err}").into());
+        } else {
+            self.status = Some("已删除".into());
+        }
+        self.refresh(cx);
+    }
+
+    fn on_open(&mut self, _: &OpenClip, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(clip) = self.items.get(self.selected) else {
+            return;
+        };
+        match clip.kind {
+            Kind::Link => {
+                let url = clip.content.trim();
+                let url = if url.starts_with("www.") {
+                    format!("https://{url}")
+                } else {
+                    url.to_string()
+                };
+                cx.open_url(&url);
+            }
+            Kind::File => {
+                if let Some(first) = clip.files().next() {
+                    cx.reveal_path(std::path::Path::new(first));
+                }
+            }
+            Kind::Image => {
+                if let Some(img) = &clip.image {
+                    cx.open_with_system(&img.path);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -321,19 +474,27 @@ fn kind_icon(kind: Kind) -> IconName {
     }
 }
 
-/// 列表左侧的类型徽标；颜色类型直接显示色块
+/// 列表左侧的类型徽标：颜色显示色块，图片显示缩略图，其他显示类型图标
 fn kind_badge(clip: &Clip, p: &Palette, size: Pixels) -> Div {
     let base = div()
         .size(size)
         .flex_none()
         .rounded(design::RADIUS_MD)
+        .overflow_hidden()
         .flex()
         .items_center()
         .justify_center();
     if clip.kind == Kind::Color
-        && let Some(color) = parse_hex_color(clip.content)
+        && let Some(color) = parse_hex_color(&clip.content)
     {
         return base.bg(color).border_1().border_color(p.border);
+    }
+    if let Some(img_info) = &clip.image {
+        return base.border_1().border_color(p.border).child(
+            img(img_info.path.clone())
+                .size_full()
+                .object_fit(ObjectFit::Cover),
+        );
     }
     base.bg(p.kind_soft(clip.kind)).child(
         Icon::new(kind_icon(clip.kind))
@@ -406,17 +567,40 @@ fn highlighted(text: String, query: &str, p: &Palette) -> StyledText {
     StyledText::new(text).with_highlights(ranges.into_iter().map(move |r| (r, style)))
 }
 
+fn human_bytes(n: u64) -> String {
+    match n {
+        0..1024 => format!("{n} B"),
+        1024..1_048_576 => format!("{:.0} KB", n as f64 / 1024.0),
+        _ => format!("{:.1} MB", n as f64 / 1_048_576.0),
+    }
+}
+
+fn preview_text(content: &str) -> String {
+    if content.chars().count() > PREVIEW_CHARS {
+        let head: String = content.chars().take(PREVIEW_CHARS).collect();
+        format!("{head}\n\n…（内容较长，预览只显示前 {PREVIEW_CHARS} 个字符）")
+    } else {
+        content.to_string()
+    }
+}
+
 impl Popup {
-    fn render_header(&self, p: &Palette, shown: usize) -> impl IntoElement {
+    fn render_header(&self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let paused = self.paused.load(Ordering::Relaxed);
+        let p = *p;
         h_flex()
+            .id("header")
             .h(px(64.))
             .px_4()
             .gap_3()
-            // 品牌 Logo
+            // 顶部空白处可以拖动窗口；搜索框和徽标用 occlude() 挡住，点击它们不会触发拖动
+            .window_control_area(WindowControlArea::Drag)
             .child(img(self.logo.clone()).size(px(26.)).flex_none())
             // 搜索框：白底圆角 + 品牌色描边和柔和光晕，表示"正在等你输入"
             .child(
                 h_flex()
+                    .id("search-field")
+                    .occlude()
                     .flex_1()
                     .h(px(40.))
                     .pl_3()
@@ -444,36 +628,55 @@ impl Popup {
                             .flex_none()
                             .text_xs()
                             .text_color(p.text_faint)
-                            .child(format!("{shown} / {}", self.clips.len())),
+                            .child(format!("{} / {}", self.items.len(), self.counts.total)),
                     ),
             )
-            // 状态：正在记录剪贴板
+            // 记录状态：点击切换 暂停 / 恢复
             .child(
                 h_flex()
+                    .id("live-badge")
+                    .occlude()
                     .flex_none()
                     .h(px(26.))
                     .px_2p5()
                     .gap_1p5()
                     .rounded_full()
-                    .bg(p.live_bg)
+                    .cursor_pointer()
                     .text_xs()
-                    .text_color(p.live_text)
-                    .child(div().size(px(6.)).rounded_full().bg(p.live_dot))
-                    .child("记录中"),
+                    .map(|d| {
+                        if paused {
+                            d.bg(p.hover)
+                                .text_color(p.text_muted)
+                                .child(div().size(px(6.)).rounded_full().bg(p.text_faint))
+                                .child("已暂停")
+                        } else {
+                            d.bg(p.live_bg)
+                                .text_color(p.live_text)
+                                .child(div().size(px(6.)).rounded_full().bg(p.live_dot))
+                                .child("记录中")
+                        }
+                    })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| this.toggle_pause(cx)),
+                    ),
             )
     }
 
     fn render_filters(&self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let p = *p;
         h_flex()
+            .id("filters")
             .px_3()
             .pb_2()
             .gap_1()
-            .children(FILTERS.iter().enumerate().map(|(i, filter)| {
+            .window_control_area(WindowControlArea::Drag)
+            .children(Filter::ALL.iter().enumerate().map(|(i, filter)| {
                 let active = i == self.filter_ix;
-                let count = self.clips.iter().filter(|c| filter.matches(c)).count();
+                let count = self.counts.get(*filter);
                 h_flex()
                     .id(("filter", i))
+                    .occlude()
                     .gap_1()
                     .px_2p5()
                     .py_1()
@@ -503,19 +706,18 @@ impl Popup {
             }))
     }
 
-    fn render_row(
-        &self,
-        pos: usize,
-        clip_ix: usize,
-        p: &Palette,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement + use<> {
+    fn render_row(&self, pos: usize, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let p = *p;
-        let clip = &self.clips[clip_ix];
+        let clip = &self.items[pos];
         let is_selected = pos == self.selected;
+        let meta = format!(
+            "{} · {}",
+            clip.source.as_deref().unwrap_or("未知来源"),
+            relative_time(clip.last_used_at, self.now)
+        );
 
         h_flex()
-            .id(("row", clip_ix))
+            .id(("row", clip.seq as usize))
             .relative()
             .h(design::ROW_HEIGHT)
             .mx_2()
@@ -540,7 +742,7 @@ impl Popup {
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                     if event.click_count >= 2 {
-                        this.paste(clip_ix, false, cx);
+                        this.paste(pos, false, cx);
                     } else {
                         this.selected = pos;
                         cx.notify();
@@ -561,13 +763,11 @@ impl Popup {
                             .child(highlighted(clip.title(), &self.query, &p)),
                     )
                     .child(
-                        h_flex()
-                            .gap_1()
+                        div()
                             .text_xs()
                             .text_color(p.text_faint)
-                            .child(clip.source)
-                            .child("·")
-                            .child(clip.ago),
+                            .truncate()
+                            .child(meta),
                     ),
             )
             .child(
@@ -583,9 +783,15 @@ impl Popup {
                     })
                     .when(pos < 9, |d| d.child(kbd(format!("{}", pos + 1), &p))),
             )
+            .into_any_element()
     }
 
     fn render_empty(&self, p: &Palette) -> impl IntoElement {
+        let (title, subtitle) = if self.counts.total == 0 {
+            ("还没有任何记录", "复制任意内容，它就会出现在这里")
+        } else {
+            ("没有找到匹配的内容", "换个关键词，或按 Tab 切换分类")
+        };
         v_flex()
             .flex_1()
             .items_center()
@@ -593,8 +799,8 @@ impl Popup {
             .gap_2()
             .text_color(p.text_faint)
             .child(Icon::new(IconName::Inbox).large())
-            .child(div().text_sm().child("没有找到匹配的内容"))
-            .child(div().text_xs().child("换个关键词，或按 Tab 切换分类"))
+            .child(div().text_sm().child(title))
+            .child(div().text_xs().child(subtitle))
     }
 
     fn render_preview(&self, clip: &Clip, p: &Palette) -> impl IntoElement {
@@ -604,7 +810,7 @@ impl Popup {
                 .text_base()
                 .line_height(relative(1.65))
                 .text_color(p.text)
-                .child(highlighted(clip.content.to_string(), &self.query, p))
+                .child(highlighted(preview_text(&clip.content), &self.query, p))
                 .into_any_element(),
             Kind::Code => div()
                 .p_3()
@@ -616,7 +822,7 @@ impl Popup {
                 .text_size(px(12.5))
                 .line_height(relative(1.55))
                 .text_color(p.text)
-                .child(clip.content)
+                .child(preview_text(&clip.content))
                 .into_any_element(),
             Kind::Link => v_flex()
                 .gap_2()
@@ -631,7 +837,7 @@ impl Popup {
                     div()
                         .text_sm()
                         .text_color(p.accent_text)
-                        .child(clip.content),
+                        .child(clip.content.trim().to_string()),
                 )
                 .child(
                     h_flex()
@@ -644,7 +850,7 @@ impl Popup {
                 )
                 .into_any_element(),
             Kind::Color => {
-                let color = parse_hex_color(clip.content).unwrap_or(p.accent);
+                let color = parse_hex_color(&clip.content).unwrap_or(p.accent);
                 let rgb = gpui_kit::Rgba::from(color);
                 let (r, g, b) = (
                     (rgb.r * 255.0).round() as u8,
@@ -673,7 +879,8 @@ impl Popup {
                     .child(
                         v_flex()
                             .text_sm()
-                            .child(row("HEX", clip.content.to_string()))
+                            .child(row("原值", clip.content.trim().to_string()))
+                            .child(row("HEX", format!("#{r:02X}{g:02X}{b:02X}")))
                             .child(row("RGB", format!("{r}, {g}, {b}")))
                             .child(row(
                                 "HSL",
@@ -687,35 +894,38 @@ impl Popup {
                     )
                     .into_any_element()
             }
-            Kind::Image => v_flex()
-                .gap_2()
-                .child(
-                    div()
-                        .h(px(190.))
-                        .rounded(design::RADIUS_LG)
-                        .border_1()
-                        .border_color(p.border)
-                        .bg(linear_gradient(
-                            135.,
-                            linear_color_stop(rgb(0x34D399), 0.),
-                            linear_color_stop(rgb(0x3B82F6), 1.),
-                        ))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            Icon::new(IconName::Frame)
-                                .large()
-                                .text_color(rgba(0xFFFFFFCC)),
-                        ),
-                )
-                .child(div().text_sm().text_color(p.text).child(clip.content))
-                .child(div().text_xs().text_color(p.text_muted).child(clip.meta))
-                .into_any_element(),
+            Kind::Image => match &clip.image {
+                Some(info) => v_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .h(px(260.))
+                            .rounded(design::RADIUS_LG)
+                            .border_1()
+                            .border_color(p.border)
+                            .bg(p.code_bg)
+                            .overflow_hidden()
+                            .p_2()
+                            .child(
+                                img(info.path.clone())
+                                    .size_full()
+                                    .object_fit(ObjectFit::Contain),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(p.text_muted)
+                            .child("Ctrl+O 用系统查看器打开"),
+                    )
+                    .into_any_element(),
+                None => div().child("图片文件丢失").into_any_element(),
+            },
             Kind::File => v_flex()
                 .gap_1()
-                .children(clip.content.lines().map(|path| {
+                .children(clip.files().map(|path| {
                     let (dir, name) = path.rsplit_once(['\\', '/']).unwrap_or(("", path));
+                    let exists = std::path::Path::new(path).exists();
                     h_flex()
                         .gap_2p5()
                         .py_1p5()
@@ -727,7 +937,16 @@ impl Popup {
                         .child(
                             v_flex()
                                 .min_w_0()
-                                .child(div().text_sm().text_color(p.text).child(name.to_string()))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(if exists { p.text } else { p.text_faint })
+                                        .child(if exists {
+                                            name.to_string()
+                                        } else {
+                                            format!("{name}（已不存在）")
+                                        }),
+                                )
                                 .child(
                                     div()
                                         .text_xs()
@@ -741,15 +960,31 @@ impl Popup {
         };
 
         let stats = match clip.kind {
-            Kind::Image => clip.meta.to_string(),
-            Kind::File => format!("{} 个文件", clip.line_count()),
+            Kind::Image => clip
+                .image
+                .as_ref()
+                .map(|i| {
+                    format!(
+                        "{} × {} · PNG · {}",
+                        i.width,
+                        i.height,
+                        human_bytes(i.bytes)
+                    )
+                })
+                .unwrap_or_default(),
+            Kind::File => format!("{} 个文件", clip.files().count()),
             Kind::Code => format!(
                 "{} · {} 行 · {} 字符",
-                clip.meta,
+                clip.lang.as_deref().unwrap_or("代码"),
                 clip.line_count(),
                 clip.char_count()
             ),
             _ => format!("{} 行 · {} 字符", clip.line_count(), clip.char_count()),
+        };
+        let stats = if clip.use_count > 1 {
+            format!("{stats} · 复制过 {} 次", clip.use_count)
+        } else {
+            stats
         };
 
         v_flex()
@@ -771,14 +1006,21 @@ impl Popup {
                     )
                     .child(
                         div()
+                            .min_w_0()
+                            .truncate()
                             .text_xs()
                             .text_color(p.text_faint)
-                            .child(format!("{} · {}", clip.source, clip.ago)),
+                            .child(format!(
+                                "{} · {}",
+                                clip.source.as_deref().unwrap_or("未知来源"),
+                                relative_time(clip.last_used_at, self.now)
+                            )),
                     )
                     .child(div().flex_1())
                     .when(clip.pinned, |d| {
                         d.child(
                             h_flex()
+                                .flex_none()
                                 .gap_1()
                                 .text_xs()
                                 .text_color(rgb(0xD97706))
@@ -809,9 +1051,10 @@ impl Popup {
             .text_xs()
             .text_color(p.text_muted)
             .child(hint(&["↵"], "粘贴", p))
-            .child(hint(&["Shift", "↵"], "纯文本", p))
             .child(hint(&["Ctrl", "1–9"], "快速粘贴", p))
-            .child(hint(&["Tab"], "切换分类", p))
+            .child(hint(&["Ctrl", "P"], "收藏", p))
+            .child(hint(&["Shift", "Del"], "删除", p))
+            .child(hint(&["Tab"], "分类", p))
             .child(div().flex_1())
             .map(|d| match &self.status {
                 Some(status) => d.child(div().text_color(p.accent_text).child(status.clone())),
@@ -823,25 +1066,21 @@ impl Popup {
 impl Render for Popup {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = Palette::new(cx.theme().is_dark());
-        let items = self.visible_items();
-        if !items.is_empty() && self.selected >= items.len() {
-            self.selected = items.len() - 1;
-        }
-        let rows: Vec<_> = items
-            .iter()
-            .enumerate()
-            .map(|(pos, &clip_ix)| self.render_row(pos, clip_ix, &p, cx).into_any_element())
+        let rows: Vec<AnyElement> = (0..self.items.len())
+            .map(|pos| self.render_row(pos, &p, cx))
             .collect();
-        let preview = items
+        let preview = self
+            .items
             .get(self.selected)
-            .map(|&ix| self.render_preview(&self.clips[ix], &p).into_any_element());
+            .map(|clip| self.render_preview(clip, &p).into_any_element());
+        let empty = self.items.is_empty();
 
         let content = h_flex()
             .flex_1()
             .min_h_0()
             .items_stretch()
-            .when(items.is_empty(), |d| d.child(self.render_empty(&p)))
-            .when(!items.is_empty(), |d| {
+            .when(empty, |d| d.child(self.render_empty(&p)))
+            .when(!empty, |d| {
                 d.child(
                     div()
                         .id("list")
@@ -870,6 +1109,9 @@ impl Render for Popup {
             .on_action(cx.listener(Self::on_dismiss))
             .on_action(cx.listener(Self::on_paste))
             .on_action(cx.listener(Self::on_paste_plain))
+            .on_action(cx.listener(Self::on_toggle_pin))
+            .on_action(cx.listener(Self::on_delete))
+            .on_action(cx.listener(Self::on_open))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.on_key_down(event, cx);
             }))
@@ -880,7 +1122,7 @@ impl Render for Popup {
                         linear_color_stop(p.header_wash, 0.),
                         linear_color_stop(transparent_black(), 1.),
                     ))
-                    .child(self.render_header(&p, items.len()))
+                    .child(self.render_header(&p, cx))
                     .child(self.render_filters(&p, cx)),
             )
             .child(div().h(px(1.)).bg(p.divider))

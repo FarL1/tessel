@@ -1,10 +1,12 @@
 [workspace]
 resolver = "3"
 members = [
+    "apps/tessel",
+    "crates/tessel-core",
+    "crates/tessel-clipboard",
     "spikes/ime-input",
     "spikes/search-bench",
     "spikes/clip-capture",
-    "spikes/popup-paste",
     "spikes/startup-probe",
     "spikes/webview-baseline",
     "tools/icon-gen",
@@ -18,6 +20,12 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+tessel-core = { path = "crates/tessel-core" }
+tessel-clipboard = { path = "crates/tessel-clipboard" }
+rusqlite = { version = "0.43", features = ["bundled"] }
+blake3 = "1.8"
+uuid = { version = "1.29", features = ["v7"] }
+image = { version = "0.25", default-features = false, features = ["png", "bmp"] }
 # GPUI 处于 1.0 之前，API 变动频繁：一律精确锁定版本，升级时单独提 PR 并做回归测试。
 gpui-kit = "=0.10.0"
 

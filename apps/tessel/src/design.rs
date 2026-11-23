@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use gpui_kit::{Hsla, Pixels, px, rgba};
 
-use crate::data::Kind;
+use tessel_core::Kind;
+use tessel_core::classify::parse_hex_rgba;
 
 /// 动效：出现时淡入 + 轻微上滑
 pub const SHOW_ANIMATION: Duration = Duration::from_millis(160);
@@ -140,12 +141,7 @@ impl Palette {
     }
 }
 
-/// 解析 `#RRGGBB` 颜色字符串
+/// 解析 `#RGB` / `#RRGGBB` / `#RRGGBBAA` 颜色字符串
 pub fn parse_hex_color(s: &str) -> Option<Hsla> {
-    let hex = s.trim().strip_prefix('#')?;
-    if hex.len() != 6 {
-        return None;
-    }
-    let v = u32::from_str_radix(hex, 16).ok()?;
-    Some(c((v << 8) | 0xFF))
+    parse_hex_rgba(s).map(c)
 }

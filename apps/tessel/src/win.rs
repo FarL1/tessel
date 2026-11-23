@@ -10,12 +10,8 @@ use windows::Win32::Graphics::Dwm::{
     DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
 };
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
+    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromPoint,
 };
-use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
-};
-use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
 use windows::Win32::System::Threading::{
     CreateEventW, GetCurrentProcess, INFINITE, SetEvent, WaitForSingleObject,
@@ -31,8 +27,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetWindowTextW, ShowWindow,
 };
 use windows::core::w;
-
-const CF_UNICODETEXT: u32 = 13;
 
 fn hwnd(raw: isize) -> HWND {
     HWND(raw as *mut _)
@@ -93,6 +87,36 @@ pub fn round_corners(raw: isize) {
     }
 }
 
+/// 窗口左上角的屏幕坐标
+pub fn window_pos(raw: isize) -> Option<(i32, i32)> {
+    let mut rect = RECT::default();
+    unsafe { GetWindowRect(hwnd(raw), &mut rect) }.ok()?;
+    Some((rect.left, rect.top))
+}
+
+pub fn move_to(raw: isize, (x, y): (i32, i32)) {
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd(raw),
+            Some(HWND_TOPMOST),
+            x,
+            y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+}
+
+/// 这个点（窗口左上角附近）是否还在某块显示器上（显示器可能被拔掉了）
+pub fn is_on_screen((x, y): (i32, i32)) -> bool {
+    let probe = POINT {
+        x: x + 40,
+        y: y + 20,
+    };
+    !unsafe { MonitorFromPoint(probe, MONITOR_DEFAULTTONULL) }.is_invalid()
+}
+
 /// 把窗口放到鼠标所在显示器工作区的水平居中、垂直偏上（约 1/4 处）
 pub fn center_on_cursor_monitor(raw: isize) {
     unsafe {
@@ -125,25 +149,6 @@ pub fn center_on_cursor_monitor(raw: isize) {
             0,
             SWP_NOSIZE | SWP_NOACTIVATE,
         );
-    }
-}
-
-pub fn set_clipboard_text(owner: isize, text: &str) -> windows::core::Result<()> {
-    let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-    unsafe {
-        OpenClipboard(Some(hwnd(owner)))?;
-        let result = (|| {
-            EmptyClipboard()?;
-            let hmem = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2)?;
-            let ptr = GlobalLock(hmem) as *mut u16;
-            std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
-            let _ = GlobalUnlock(hmem);
-            // 成功后内存归系统所有，不能再释放
-            SetClipboardData(CF_UNICODETEXT, Some(HANDLE(hmem.0)))?;
-            Ok(())
-        })();
-        let _ = CloseClipboard();
-        result
     }
 }
 

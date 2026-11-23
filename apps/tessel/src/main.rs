@@ -12,10 +12,12 @@
 #[cfg(windows)]
 mod win;
 
-mod data;
 mod design;
 mod ui;
 
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
@@ -57,22 +59,49 @@ pub enum AppCommand {
     Toggle(Instant),
     /// 托盘、再次启动：只显示（已经显示就保持）
     Show(Instant),
+    /// 采集线程写入了新内容
+    ClipboardChanged,
+    /// 托盘菜单：窗口回到默认位置
+    ResetPosition,
     Quit,
+}
+
+/// 数据目录：默认 %LOCALAPPDATA%\Tessel；可以用 TESSEL_DATA_DIR 指定（测试时用，避免混进真实历史）
+fn data_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("TESSEL_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
+    let base = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("Tessel")
 }
 
 /// 托盘图标和菜单。对象析构时托盘图标会消失，所以要保存到进程结束。
 fn build_tray(tx: async_channel::Sender<AppCommand>) -> Option<tray_icon::TrayIcon> {
     let show_item = MenuItem::new("显示 Tessel\tAlt+V", true, None);
+    let reset_item = MenuItem::new("重置窗口位置", true, None);
     let quit_item = MenuItem::new("退出", true, None);
     let menu = Menu::new();
-    menu.append_items(&[&show_item, &PredefinedMenuItem::separator(), &quit_item])
-        .ok()?;
+    menu.append_items(&[
+        &show_item,
+        &reset_item,
+        &PredefinedMenuItem::separator(),
+        &quit_item,
+    ])
+    .ok()?;
 
-    let (show_id, quit_id) = (show_item.id().clone(), quit_item.id().clone());
+    let (show_id, reset_id, quit_id) = (
+        show_item.id().clone(),
+        reset_item.id().clone(),
+        quit_item.id().clone(),
+    );
     let menu_tx = tx.clone();
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
         let cmd = if event.id == show_id {
             AppCommand::Show(Instant::now())
+        } else if event.id == reset_id {
+            AppCommand::ResetPosition
         } else if event.id == quit_id {
             AppCommand::Quit
         } else {
@@ -110,6 +139,52 @@ fn main() {
     let start_hidden = std::env::args().any(|a| a == "--background");
 
     let (tx, rx) = async_channel::unbounded::<AppCommand>();
+
+    // 存储：UI 线程和采集线程各用一个连接（SQLite WAL 模式支持并发读写）
+    let dir = data_dir();
+    if let Err(err) = std::fs::create_dir_all(&dir) {
+        log_line(format!("[error] 无法创建数据目录 {}：{err}", dir.display()));
+        return;
+    }
+    let ui_store = match tessel_core::Store::open(&dir) {
+        Ok(store) => store,
+        Err(err) => {
+            log_line(format!("[error] 无法打开数据库：{err}"));
+            return;
+        }
+    };
+    log_line(format!("[store] 数据目录 {}", dir.display()));
+
+    // 剪贴板采集线程
+    let paused = Arc::new(AtomicBool::new(false));
+    {
+        let tx = tx.clone();
+        let store = tessel_core::Store::open(&dir).map(std::cell::RefCell::new);
+        match store {
+            Ok(store) => {
+                let result = tessel_clipboard::spawn_watcher(paused.clone(), move |clip| {
+                    let kind = match &clip.payload {
+                        tessel_core::Payload::Text(_) => "文本",
+                        tessel_core::Payload::Files(_) => "文件",
+                        tessel_core::Payload::Image { .. } => "图片",
+                    };
+                    let source = clip.source.clone().unwrap_or_default();
+                    match store.borrow_mut().record(clip) {
+                        Ok(Some(seq)) => {
+                            debug_log(format!("[capture] {kind} · {source} · seq={seq}"));
+                            let _ = tx.try_send(AppCommand::ClipboardChanged);
+                        }
+                        Ok(None) => {}
+                        Err(err) => log_line(format!("[capture] 写入失败：{err}")),
+                    }
+                });
+                if let Err(err) = result {
+                    log_line(format!("[error] 启动剪贴板监听失败：{err}"));
+                }
+            }
+            Err(err) => log_line(format!("[error] 采集线程无法打开数据库：{err}")),
+        }
+    }
 
     // 第二个实例的"显示"请求
     {
@@ -189,7 +264,7 @@ fn main() {
                 win::hide(hwnd);
                 win::round_corners(hwnd);
                 win::set_title(hwnd, &format!("{APP_NAME} {APP_NAME_ZH}"));
-                cx.new(|cx| ui::Popup::new(hwnd, window, cx))
+                cx.new(|cx| ui::Popup::new(hwnd, ui_store, paused, window, cx))
             })
             .expect("failed to open window");
 
@@ -214,6 +289,8 @@ fn main() {
                         popup.update(cx, |this, cx| match cmd {
                             AppCommand::Toggle(t0) => this.toggle(t0, window, cx),
                             AppCommand::Show(t0) => this.show_if_hidden(t0, window, cx),
+                            AppCommand::ClipboardChanged => this.on_clipboard_changed(cx),
+                            AppCommand::ResetPosition => this.reset_position(),
                             AppCommand::Quit => {}
                         });
                     });

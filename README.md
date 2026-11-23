@@ -12,7 +12,7 @@
   <img src="docs/images/popup-overview.png" width="720" alt="Tessel 主界面">
 </p>
 
-> 🚧 项目处于 **M0 技术验证**阶段，界面里的数据还是模拟数据，还不能日常使用。
+> 🚧 项目处于 **M1（Windows 本地版）开发中**：剪贴板采集、本地存储、搜索、粘贴已经可用；设置页、自动更新、安装包等还在路上。
 
 ## 为什么是 Tessel
 
@@ -36,9 +36,23 @@
 - Visual Studio 2022（或 Build Tools），勾选"使用 C++ 的桌面开发"，并安装 Windows SDK
 
 ```sh
-cargo run -p spike-popup-paste             # 运行原型（可执行文件名为 tessel）
-cargo run -p icon-gen --release            # 修改 assets/brand/*.svg 后重新生成 PNG / ICO
+cargo run -p tessel                                  # 运行（调试版，带控制台日志；TESSEL_DEBUG=1 输出更详细的日志）
+cargo test -p tessel-core -p tessel-clipboard        # 单元测试
+powershell -ExecutionPolicy Bypass -File scripts\install-local.ps1   # 编译 release 并安装到本机、创建桌面快捷方式
+cargo run -p icon-gen --release                      # 修改 assets/brand/*.svg 后重新生成 PNG / ICO
 ```
+
+代码结构：
+
+| 目录 | 内容 |
+|---|---|
+| `crates/tessel-core` | 数据模型、内容识别、SQLite 存储与搜索（不依赖 UI 和平台，可单测） |
+| `crates/tessel-clipboard` | 平台剪贴板：事件驱动监听、遵守隐私标记的读取、写回（目前是 Windows） |
+| `apps/tessel` | 桌面应用（GPUI）：弹窗界面、全局热键、托盘、粘贴 |
+| `spikes/` | M0 技术验证程序，保留作参考 |
+| `tools/icon-gen` | 从 SVG 生成各尺寸 PNG 和 .ico |
+
+数据存放在 `%LOCALAPPDATA%\Tessel\`（`tessel.db` + `images/`），可以用环境变量 `TESSEL_DATA_DIR` 换到别的目录。
 
 ## 许可证
 

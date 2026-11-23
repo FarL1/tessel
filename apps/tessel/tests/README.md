@@ -7,10 +7,11 @@
 - 弹窗里的按键通过 `PostMessage` 直接投递给弹窗本身。原因是弹窗在前台时，`SendInput` 注入的按键会丢失（真实键盘不受影响），详见 `docs/m0-report.md`。
 
 ```powershell
-# 1. 启动弹窗程序（--background：启动后不自动弹出）
+# 1. 启动弹窗程序（--background：启动后不自动弹出；TESSEL_DATA_DIR：用临时数据目录，不碰真实历史）
+$env:TESSEL_DATA_DIR = "$env:TEMP	essel-e2e"
 Start-Process D:\cargo-target\mypaste\debug\tessel.exe -ArgumentList --background -RedirectStandardOutput $env:TEMP\tessel.log
 # 2. 运行测试
-powershell -ExecutionPolicy Bypass -File spikes\popup-paste\tests\harness.ps1 (Get-Process tessel).Id
+powershell -ExecutionPolicy Bypass -File apps\tessel\tests\harness.ps1 (Get-Process tessel).Id
 # 3. 查看结果：测试窗口收到的文本，以及弹窗日志
 Get-Content $env:TEMP\paste-target.txt; Get-Content $env:TEMP\tessel.log
 ```
