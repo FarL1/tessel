@@ -14,13 +14,18 @@ fn main() -> windows::core::Result<()> {
     use windows::Win32::Graphics::DirectWrite::{
         DWRITE_FACTORY_TYPE_SHARED, DWriteCreateFactory, IDWriteFactory5, IDWriteFontCollection1,
     };
-    use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIFactory6};
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory2, DXGI_CREATE_FACTORY_FLAGS, IDXGIFactory6,
+    };
 
     let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
 
     let t = Instant::now();
     let factory: IDWriteFactory5 = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
-    println!("DWriteCreateFactory                         {:>8.1}ms", ms(t));
+    println!(
+        "DWriteCreateFactory                         {:>8.1}ms",
+        ms(t)
+    );
 
     for check_updates in [true, false, true] {
         let t = Instant::now();
@@ -35,7 +40,10 @@ fn main() -> windows::core::Result<()> {
 
     let t = Instant::now();
     let dxgi: IDXGIFactory6 = unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))? };
-    println!("CreateDXGIFactory2                          {:>8.1}ms", ms(t));
+    println!(
+        "CreateDXGIFactory2                          {:>8.1}ms",
+        ms(t)
+    );
     let adapter = unsafe { dxgi.EnumAdapters1(0)? };
 
     for i in 0..2 {
@@ -54,7 +62,11 @@ fn main() -> windows::core::Result<()> {
                 None,
             )?
         };
-        println!("D3D11CreateDevice（第 {} 次）                {:>8.1}ms", i + 1, ms(t));
+        println!(
+            "D3D11CreateDevice（第 {} 次）                {:>8.1}ms",
+            i + 1,
+            ms(t)
+        );
     }
     Ok(())
 }

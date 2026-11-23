@@ -14,13 +14,13 @@ mod win;
 
 use std::time::Instant;
 
+use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use global_hotkey::hotkey::{Code, HotKey, Modifiers};
-use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 const ITEMS: &[&str] = &[
@@ -54,7 +54,9 @@ struct Popup {
 
 impl Popup {
     fn new(hwnd: isize, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("搜索…（↑↓ 选择，Enter 粘贴，Esc 关闭）"));
+        let search = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("搜索…（↑↓ 选择，Enter 粘贴，Esc 关闭）")
+        });
 
         let subscriptions = vec![
             cx.subscribe_in(&search, window, |this, state, event, window, cx| {
@@ -127,8 +129,10 @@ impl Popup {
         self.visible = true;
         self.selected = 0;
 
+        // 注意：不要调用 window.activate_window()。GPUI 在 Windows 上的实现是异步的，
+        // 首次调用会重新应用窗口创建时保存的位置状态，还会注入一次 Alt 键来绕过前台锁，
+        // 这个假 Alt 会发给当时的前台窗口。收到 WM_HOTKEY 时我们本身就有前台权限，直接用 Win32 即可。
         win::show_and_focus(self.hwnd);
-        window.activate_window();
         self.search.update(cx, |state, cx| {
             state.set_value("", window, cx);
             state.focus(window, cx);
@@ -190,7 +194,11 @@ impl Popup {
         let report = win::restore_and_paste(target);
         self.push_log(format!(
             "[paste] {} 目标「{}」· 切换焦点 {:.1}ms · 总耗时 {:.1}ms",
-            if report.focused { "✅" } else { "❌ 无法切回目标窗口" },
+            if report.focused {
+                "✅"
+            } else {
+                "❌ 无法切回目标窗口"
+            },
             report.target_title,
             report.focus_ms,
             t0.elapsed().as_secs_f64() * 1000.0,
@@ -267,7 +275,9 @@ fn main() {
         // 全局热键：global-hotkey 在当前线程创建隐藏窗口接收 WM_HOTKEY，由 GPUI 的消息循环派发
         let manager = GlobalHotKeyManager::new().expect("hotkey manager");
         let hotkey = HotKey::new(Some(Modifiers::ALT), Code::KeyV);
-        manager.register(hotkey).expect("register Alt+V（可能已被其他程序占用）");
+        manager
+            .register(hotkey)
+            .expect("register Alt+V（可能已被其他程序占用）");
         let hotkey_id = hotkey.id();
         GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
             if event.id == hotkey_id && event.state == HotKeyState::Pressed {
@@ -282,7 +292,10 @@ fn main() {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: None,
             kind: WindowKind::PopUp,
-            show: false,
+            // 以 show: true 创建，在构建闭包里立刻用 Win32 隐藏（首帧之前，不会闪烁）。
+            // 如果用 show: false，GPUI 会保存"延迟应用的位置状态"，并在第一次 activate 时异步应用，
+            // 打乱我们自己的显示和焦点流程。
+            show: true,
             focus: false,
             is_resizable: false,
             window_background: WindowBackgroundAppearance::MicaBackdrop,
@@ -294,6 +307,7 @@ fn main() {
                 Ok(RawWindowHandle::Win32(h)) => h.hwnd.get(),
                 _ => panic!("expected a Win32 window handle"),
             };
+            win::hide(hwnd);
             cx.new(|cx| Popup::new(hwnd, window, cx))
         })
         .expect("failed to open window");

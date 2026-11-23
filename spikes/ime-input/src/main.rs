@@ -141,7 +141,10 @@ impl Render for ImeSpike {
 /// 启动阶段计时（设置环境变量 MYPASTE_TRACE=1 时打印）
 fn trace(start: std::time::Instant, stage: &str) {
     if std::env::var_os("MYPASTE_TRACE").is_some() {
-        eprintln!("[trace] {:>7.1}ms  {stage}", start.elapsed().as_secs_f64() * 1000.0);
+        eprintln!(
+            "[trace] {:>7.1}ms  {stage}",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
     }
 }
 

@@ -232,10 +232,18 @@ release 构建（14.6MB），3 次：窗口出现分别用了 3290 / 2548 / 2375
 
 自动化测试（测试窗口 → `Alt+V` → `↓ ↓ Enter`）：弹窗出现并拿到了前台，但日志里没有 `PressEnter`/`[paste]`，剪贴板为空，焦点也没有回到测试窗口。
 
-可能的原因（待排查）：
-1. 窗口以 `focus: false, show: false` 创建，之后再 `ShowWindow` + `SetForegroundWindow` 时，GPUI 内部的焦点状态可能没有更新，按键没有路由到输入框。
-2. 输入框的 `Enter` 走的是 action 绑定，可能被父元素的按键处理或 keymap 上下文挡住了。
+**根因分析（读源码，待复测确认）**：输入框处理 `Enter` 的逻辑本身没问题（单行模式下收到 `Enter` action 就会发出 `PressEnter`），问题出在窗口的显示和激活流程上。GPUI 0.3.12 在 Windows 上的 `Window::activate_window()`（`gpui-pre-windows/src/window.rs`）：
 
-已经在程序里加了按键、激活状态变化、`PressEnter` 三处日志。下次在**你空闲的时候**重跑自动化测试，就能定位问题。
+1. **是异步执行的**（`executor.spawn`），会在我们同步的显示逻辑之后才执行。
+2. 窗口以 `show: false` 创建时，GPUI 会把 `WINDOWPLACEMENT` 存到 `initial_placement`，**第一次 activate 时再异步调用 `SetWindowPlacement`**，这会打乱我们用 `ShowWindow` 设置好的显示状态。
+3. 它会**通过 `SendInput` 注入一次 Alt 键的按下和松开**来绕过前台锁。这个假 Alt 会发给当时的前台窗口，可能激活其他程序的菜单栏。
+
+**修复（已实现，待复测）**：
+- 窗口以 `show: true, focus: false` 创建，在构建闭包里立刻用 `ShowWindow(SW_HIDE)` 隐藏（首帧之前，不会闪烁），这样 GPUI 就不会保存延迟应用的位置状态。
+- **弹出面板绝不调用 `window.activate_window()`**。收到 `WM_HOTKEY` 时进程本来就有前台权限，直接 `ShowWindow` + `SetForegroundWindow`，再用 GPUI 的 `focus()` 设置输入框焦点。
+
+→ **M1 设计约束**：弹出窗口的显示、隐藏、激活、定位全部由我们自己的 Win32 层管理，GPUI 只负责渲染和输入。
+
+已经在程序里加了按键、激活状态变化、`PressEnter` 三处日志。测试脚本放在 `spikes/popup-paste/tests/`，在**你不用电脑的时候**运行即可复测。
 
 > 自动化测试中断的原因：检测到你在前台运行游戏，为了不干扰你，停止了所有会弹窗或模拟按键的测试。测试脚本每一步都会检查前台窗口，不是测试窗口就中止，不会把按键发给你正在使用的程序。
