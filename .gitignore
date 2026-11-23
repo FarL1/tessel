@@ -1,0 +1,9 @@
+/target
+*.pdb
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json

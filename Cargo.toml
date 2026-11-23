@@ -1,0 +1,35 @@
+[workspace]
+resolver = "3"
+members = [
+    "spikes/ime-input",
+    "spikes/search-bench",
+    "spikes/clip-capture",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+# GPUI 处于 1.0 之前，API 变动频繁：一律精确锁定版本，升级时单独提 PR 并做回归测试。
+gpui-kit = "=0.10.0"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# 开发时依赖开启优化，GPUI 在 debug 模式下渲染很慢
+[profile.dev.package."*"]
+opt-level = 2

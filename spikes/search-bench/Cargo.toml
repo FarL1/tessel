@@ -1,0 +1,15 @@
+[package]
+name = "spike-search-bench"
+description = "M0 spike #7: SQLite FTS5 trigram search latency on 100k mixed CJK/English items"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rusqlite = { version = "0.43", features = ["bundled"] }
+fastrand = "2.5"
+
+[lints]
+workspace = true
