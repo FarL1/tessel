@@ -7,6 +7,7 @@ members = [
     "spikes/popup-paste",
     "spikes/startup-probe",
     "spikes/webview-baseline",
+    "tools/icon-gen",
 ]
 
 [workspace.package]

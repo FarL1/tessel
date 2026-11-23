@@ -1,23 +1,30 @@
 [package]
 name = "spike-popup-paste"
-description = "M0 spikes #2/#5/#6: hidden GPUI popup, global hotkey, focus restore + SendInput paste, Mica"
+description = "Tessel · 拼贴 prototype: hidden GPUI popup, global hotkey, tray, focus restore + paste"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "tessel"
+path = "src/main.rs"
 
 [dependencies]
 gpui-kit.workspace = true
 global-hotkey = "0.10"
 async-channel = "2"
 raw-window-handle = "0.6"
+tray-icon = "0.26"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
+    "Win32_Security",
     "Win32_System_DataExchange",
     "Win32_System_Memory",
     "Win32_System_ProcessStatus",
@@ -25,6 +32,9 @@ windows = { version = "0.62", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[build-dependencies]
+embed-resource = "3"
 
 [lints]
 workspace = true

@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Tessel · 拼贴 —— 2×2 的圆角瓷砖，右下角一块被"取出"（偏移、浮起、带阴影），象征从历史里取出一条粘贴 -->
+  <defs>
+    <linearGradient id="t1" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#C7D2FE"/><stop offset="1" stop-color="#A5B4FC"/>
+    </linearGradient>
+    <linearGradient id="t2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#A5B4FC"/><stop offset="1" stop-color="#818CF8"/>
+    </linearGradient>
+    <linearGradient id="t3" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#DDD6FE"/><stop offset="1" stop-color="#A78BFA"/>
+    </linearGradient>
+    <linearGradient id="hero" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4F46E5"/>
+      <stop offset="0.6" stop-color="#7C3AED"/>
+      <stop offset="1" stop-color="#C026D3"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.32"/>
+      <stop offset="0.55" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="7"/>
+      <feOffset dx="0" dy="7" result="b"/>
+      <feFlood flood-color="#3B0764" flood-opacity="0.38"/>
+      <feComposite in2="b" operator="in"/>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- 三块静止的瓷砖 -->
+  <rect x="14" y="14" width="98" height="98" rx="26" fill="url(#t1)"/>
+  <rect x="128" y="14" width="98" height="98" rx="26" fill="url(#t2)"/>
+  <rect x="14" y="128" width="98" height="98" rx="26" fill="url(#t3)"/>
+
+  <!-- 被取出的那一块原来的位置：一道淡淡的槽位 -->
+  <rect x="128" y="128" width="98" height="98" rx="26" fill="none"
+        stroke="#A5B4FC" stroke-width="4" stroke-dasharray="10 9" stroke-linecap="round" opacity="0.9"/>
+
+  <!-- 被取出的瓷砖：向右下偏移并浮起 -->
+  <g filter="url(#shadow)">
+    <rect x="138" y="138" width="98" height="98" rx="26" fill="url(#hero)"/>
+    <rect x="138" y="138" width="98" height="98" rx="26" fill="url(#sheen)"/>
+    <!-- 两道"文字线"，暗示这是一条内容 -->
+    <rect x="160" y="170" width="54" height="10" rx="5" fill="#FFFFFF" opacity="0.95"/>
+    <rect x="160" y="192" width="34" height="10" rx="5" fill="#FFFFFF" opacity="0.7"/>
+  </g>
+</svg>

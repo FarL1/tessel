@@ -1,13 +1,13 @@
-//! M0 技术验证 #2 / #5 / #6 + 界面原型：产品核心闭环。
+//! Tessel · 拼贴 —— 原型（M0 技术验证 #2 / #5 / #6 + 界面原型）。
 //!
-//! 启动后窗口隐藏，按 Alt+V 弹出：输入过滤 → ↑↓ 选择 → Enter 粘贴回之前的窗口；Esc 或点击外部隐藏。
+//! 双击启动时直接弹出主界面；之后常驻托盘，按 Alt+V 唤起：
+//! 输入过滤 → ↑↓ 选择 → Enter 粘贴回之前的窗口；Esc 或点击外部隐藏。
 //!
-//! 测量与验证：
-//! - #2 热键 → 首帧渲染的延迟；隐藏状态下的常驻内存
-//! - #5 隐藏自身 → 切回之前的前台窗口 → SendInput Ctrl+V 的成功率与耗时
-//! - #6 全局热键（global-hotkey）、PopUp 窗口（不进任务栏、置顶）、Mica 背景、圆角
-//!
-//! 环境变量：MYPASTE_DEBUG=1 打印按键和激活事件；MYPASTE_KIND=normal|popup；MYPASTE_BG=opaque|mica
+//! 命令行参数：`--background` 启动后不弹出（给开机自启用）。
+//! 环境变量：TESSEL_DEBUG=1 打印按键和激活事件；TESSEL_KIND=normal|popup；TESSEL_BG=opaque|mica
+
+// release 构建用 GUI 子系统：双击 exe 时不再额外弹出控制台窗口
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 #[cfg(windows)]
 mod win;
@@ -23,6 +23,11 @@ use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use gpui_kit::component::Theme;
 use gpui_kit::*;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::{MouseButton as TrayButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+pub const APP_NAME: &str = "Tessel";
+pub const APP_NAME_ZH: &str = "拼贴";
 
 /// 带本地时间戳（东八区）的日志，方便和测试脚本的时间对齐
 pub fn log_line(line: String) {
@@ -40,13 +45,81 @@ pub fn log_line(line: String) {
 }
 
 pub fn debug_log(line: String) {
-    if std::env::var_os("MYPASTE_DEBUG").is_some() {
+    if std::env::var_os("TESSEL_DEBUG").is_some() {
         log_line(line);
     }
 }
 
+/// 从热键、托盘、第二个实例等各处汇集到 GPUI 主线程的命令
+#[derive(Clone, Copy, Debug)]
+pub enum AppCommand {
+    /// 热键：显示 ↔ 隐藏
+    Toggle(Instant),
+    /// 托盘、再次启动：只显示（已经显示就保持）
+    Show(Instant),
+    Quit,
+}
+
+/// 托盘图标和菜单。对象析构时托盘图标会消失，所以要保存到进程结束。
+fn build_tray(tx: async_channel::Sender<AppCommand>) -> Option<tray_icon::TrayIcon> {
+    let show_item = MenuItem::new("显示 Tessel\tAlt+V", true, None);
+    let quit_item = MenuItem::new("退出", true, None);
+    let menu = Menu::new();
+    menu.append_items(&[&show_item, &PredefinedMenuItem::separator(), &quit_item])
+        .ok()?;
+
+    let (show_id, quit_id) = (show_item.id().clone(), quit_item.id().clone());
+    let menu_tx = tx.clone();
+    MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+        let cmd = if event.id == show_id {
+            AppCommand::Show(Instant::now())
+        } else if event.id == quit_id {
+            AppCommand::Quit
+        } else {
+            return;
+        };
+        let _ = menu_tx.try_send(cmd);
+    }));
+    TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+        if let TrayIconEvent::Click {
+            button: TrayButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        } = event
+        {
+            let _ = tx.try_send(AppCommand::Show(Instant::now()));
+        }
+    }));
+
+    // 图标从 exe 内嵌的资源（tessel.rc 里的序号 1）加载
+    let icon = tray_icon::Icon::from_resource(1, Some((32, 32))).ok()?;
+    TrayIconBuilder::new()
+        .with_icon(icon)
+        .with_tooltip(format!("{APP_NAME} {APP_NAME_ZH} · Alt+V 唤起"))
+        .with_menu(Box::new(menu))
+        .with_menu_on_left_click(false)
+        .build()
+        .ok()
+}
+
 fn main() {
-    let (tx, rx) = async_channel::unbounded::<Instant>();
+    // 单实例：如果已经有一个在运行，通知它显示出来，然后自己退出
+    let Some(show_requests) = win::acquire_single_instance() else {
+        return;
+    };
+    let start_hidden = std::env::args().any(|a| a == "--background");
+
+    let (tx, rx) = async_channel::unbounded::<AppCommand>();
+
+    // 第二个实例的"显示"请求
+    {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            while show_requests.wait() {
+                let _ = tx.try_send(AppCommand::Show(Instant::now()));
+            }
+        });
+    }
 
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
@@ -59,24 +132,33 @@ fn main() {
             // 全局热键：global-hotkey 在当前线程创建隐藏窗口接收 WM_HOTKEY，由 GPUI 的消息循环派发
             let manager = GlobalHotKeyManager::new().expect("hotkey manager");
             let hotkey = HotKey::new(Some(Modifiers::ALT), Code::KeyV);
-            manager
-                .register(hotkey)
-                .expect("register Alt+V（可能已被其他程序占用）");
+            if let Err(err) = manager.register(hotkey) {
+                log_line(format!(
+                    "[warn] 注册 Alt+V 失败（可能已被其他程序占用）：{err}"
+                ));
+            }
             let hotkey_id = hotkey.id();
+            let hotkey_tx = tx.clone();
             GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
                 debug_log(format!("[hotkey] 回调 state={:?}", event.state));
                 if event.id == hotkey_id && event.state == HotKeyState::Pressed {
-                    let _ = tx.try_send(Instant::now());
+                    let _ = hotkey_tx.try_send(AppCommand::Toggle(Instant::now()));
                 }
             }));
             // manager 析构会注销热键，让它活到进程结束
             std::mem::forget(manager);
 
-            let kind = match std::env::var("MYPASTE_KIND").as_deref() {
+            // 托盘：tray-icon 同样依赖当前线程的消息循环（GPUI 的）
+            match build_tray(tx.clone()) {
+                Some(tray) => std::mem::forget(tray),
+                None => log_line("[warn] 创建托盘图标失败".into()),
+            }
+
+            let kind = match std::env::var("TESSEL_KIND").as_deref() {
                 Ok("normal") => WindowKind::Normal,
                 _ => WindowKind::PopUp,
             };
-            let background = match std::env::var("MYPASTE_BG").as_deref() {
+            let background = match std::env::var("TESSEL_BG").as_deref() {
                 Ok("opaque") => WindowBackgroundAppearance::Opaque,
                 _ => WindowBackgroundAppearance::MicaBackdrop,
             };
@@ -85,6 +167,8 @@ fn main() {
                 Bounds::centered(None, size(px(design::WINDOW_W), px(design::WINDOW_H)), cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                // 不要设置 GPUI 的 titlebar：一旦设置，GPUI 就会画出一条系统标题栏。
+                // 窗口标题（任务管理器、辅助功能里显示的名字）改用 Win32 设置。
                 titlebar: None,
                 kind,
                 // 以 show: true 创建，在构建闭包里立刻用 Win32 隐藏（首帧之前，不会闪烁）。
@@ -104,6 +188,7 @@ fn main() {
                 };
                 win::hide(hwnd);
                 win::round_corners(hwnd);
+                win::set_title(hwnd, &format!("{APP_NAME} {APP_NAME_ZH}"));
                 cx.new(|cx| ui::Popup::new(hwnd, window, cx))
             })
             .expect("failed to open window");
@@ -113,11 +198,24 @@ fn main() {
                 "[ready] 按 Alt+V 唤起 · 启动后工作集 {ws:.1}MB · 私有 {private:.1}MB"
             ));
 
+            // 双击启动时直接弹出，让用户知道它已经在运行
+            if !start_hidden {
+                let _ = tx.try_send(AppCommand::Show(Instant::now()));
+            }
+
             cx.spawn(async move |cx| {
-                while let Ok(t0) = rx.recv().await {
+                while let Ok(cmd) = rx.recv().await {
+                    if let AppCommand::Quit = cmd {
+                        cx.update(|cx| cx.quit());
+                        break;
+                    }
                     let popup = popup.clone();
                     let _ = window_handle.update(cx, |_, window, cx| {
-                        popup.update(cx, |this, cx| this.toggle(t0, window, cx));
+                        popup.update(cx, |this, cx| match cmd {
+                            AppCommand::Toggle(t0) => this.toggle(t0, window, cx),
+                            AppCommand::Show(t0) => this.show_if_hidden(t0, window, cx),
+                            AppCommand::Quit => {}
+                        });
                     });
                 }
             })

@@ -138,9 +138,9 @@ impl Render for ImeSpike {
     }
 }
 
-/// 启动阶段计时（设置环境变量 MYPASTE_TRACE=1 时打印）
+/// 启动阶段计时（设置环境变量 TESSEL_TRACE=1 时打印）
 fn trace(start: std::time::Instant, stage: &str) {
-    if std::env::var_os("MYPASTE_TRACE").is_some() {
+    if std::env::var_os("TESSEL_TRACE").is_some() {
         eprintln!(
             "[trace] {:>7.1}ms  {stage}",
             start.elapsed().as_secs_f64() * 1000.0
@@ -162,7 +162,7 @@ fn main() {
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitlebarOptions {
-                title: Some("MyPaste · M0 · 中文输入法验证".into()),
+                title: Some("Tessel · M0 · 中文输入法验证".into()),
                 ..Default::default()
             }),
             ..Default::default()

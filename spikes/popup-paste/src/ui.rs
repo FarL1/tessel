@@ -1,6 +1,7 @@
 //! 弹出面板的界面：搜索栏、分类标签、列表、预览、快捷键提示。
 
 use std::ops::Range;
+use std::sync::Arc;
 use std::time::Instant;
 
 use gpui_kit::base::{h_flex, v_flex};
@@ -66,6 +67,7 @@ pub struct Popup {
     show_count: usize,
     scroll: ScrollHandle,
     status: Option<SharedString>,
+    logo: Arc<Image>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -114,6 +116,10 @@ impl Popup {
             show_count: 0,
             scroll: ScrollHandle::new(),
             status: None,
+            logo: Arc::new(Image::from_bytes(
+                ImageFormat::Png,
+                include_bytes!("../../../assets/brand/png/tessel-64.png").to_vec(),
+            )),
             _subscriptions: subscriptions,
         }
     }
@@ -136,6 +142,13 @@ impl Popup {
             })
             .map(|(i, _)| i)
             .collect()
+    }
+
+    /// 托盘点击、再次启动：只负责显示，已经显示时保持不动
+    pub fn show_if_hidden(&mut self, t0: Instant, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.visible {
+            self.show(t0, window, cx);
+        }
     }
 
     pub fn toggle(&mut self, t0: Instant, window: &mut Window, cx: &mut Context<Self>) {
@@ -396,20 +409,57 @@ fn highlighted(text: String, query: &str, p: &Palette) -> StyledText {
 impl Popup {
     fn render_header(&self, p: &Palette, shown: usize) -> impl IntoElement {
         h_flex()
-            .h(px(56.))
+            .h(px(64.))
             .px_4()
             .gap_3()
-            .child(Icon::new(IconName::Search).text_color(p.text_faint))
+            // 品牌 Logo
+            .child(img(self.logo.clone()).size(px(26.)).flex_none())
+            // 搜索框：白底圆角 + 品牌色描边和柔和光晕，表示"正在等你输入"
             .child(
-                div()
+                h_flex()
                     .flex_1()
-                    .child(Input::new(&self.search).appearance(false).large()),
+                    .h(px(40.))
+                    .pl_3()
+                    .pr_2()
+                    .gap_2()
+                    .rounded(design::RADIUS_MD)
+                    .bg(p.search_bg)
+                    .border_1()
+                    .border_color(p.search_border)
+                    .shadow(vec![BoxShadow {
+                        color: p.search_glow,
+                        offset: point(px(0.), px(0.)),
+                        blur_radius: px(0.),
+                        spread_radius: px(3.),
+                        inset: false,
+                    }])
+                    .child(Icon::new(IconName::Search).small().text_color(p.accent))
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(Input::new(&self.search).appearance(false)),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(p.text_faint)
+                            .child(format!("{shown} / {}", self.clips.len())),
+                    ),
             )
+            // 状态：正在记录剪贴板
             .child(
-                div()
+                h_flex()
+                    .flex_none()
+                    .h(px(26.))
+                    .px_2p5()
+                    .gap_1p5()
+                    .rounded_full()
+                    .bg(p.live_bg)
                     .text_xs()
-                    .text_color(p.text_faint)
-                    .child(format!("{shown} / {} 条", self.clips.len())),
+                    .text_color(p.live_text)
+                    .child(div().size(px(6.)).rounded_full().bg(p.live_dot))
+                    .child("记录中"),
             )
     }
 
@@ -823,8 +873,16 @@ impl Render for Popup {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.on_key_down(event, cx);
             }))
-            .child(self.render_header(&p, items.len()))
-            .child(self.render_filters(&p, cx))
+            .child(
+                v_flex()
+                    .bg(linear_gradient(
+                        180.,
+                        linear_color_stop(p.header_wash, 0.),
+                        linear_color_stop(transparent_black(), 1.),
+                    ))
+                    .child(self.render_header(&p, items.len()))
+                    .child(self.render_filters(&p, cx)),
+            )
             .child(div().h(px(1.)).bg(p.divider))
             .child(content)
             .child(self.render_footer(&p))

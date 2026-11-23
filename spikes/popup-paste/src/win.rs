@@ -4,6 +4,7 @@
 
 use std::time::{Duration, Instant};
 
+use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
 use windows::Win32::Foundation::{HANDLE, HWND, POINT, RECT};
 use windows::Win32::Graphics::Dwm::{
     DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
@@ -16,15 +17,20 @@ use windows::Win32::System::DataExchange::{
 };
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS_EX};
-use windows::Win32::System::Threading::GetCurrentProcess;
+use windows::Win32::System::Threading::{
+    CreateEventW, GetCurrentProcess, INFINITE, SetEvent, WaitForSingleObject,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP,
     SendInput, SetFocus, VIRTUAL_KEY, VK_CONTROL, VK_V,
 };
+use windows::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetForegroundWindow, GetWindowRect, GetWindowTextW, HWND_TOPMOST, IsWindow,
-    SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOSIZE, SetForegroundWindow, SetWindowPos, ShowWindow,
+    SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOSIZE, SetForegroundWindow, SetWindowPos,
+    SetWindowTextW, ShowWindow,
 };
+use windows::core::w;
 
 const CF_UNICODETEXT: u32 = 13;
 
@@ -65,6 +71,12 @@ pub fn focus(raw: isize) {
 pub fn hide(raw: isize) {
     unsafe {
         let _ = ShowWindow(hwnd(raw), SW_HIDE);
+    }
+}
+
+pub fn set_title(raw: isize, title: &str) {
+    unsafe {
+        let _ = SetWindowTextW(hwnd(raw), &windows::core::HSTRING::from(title));
     }
 }
 
@@ -226,4 +238,29 @@ pub fn memory_mb() -> (f64, f64) {
         counters.WorkingSetSize as f64 / 1_048_576.0,
         counters.PrivateUsage as f64 / 1_048_576.0,
     )
+}
+
+/// 跨进程的"请显示"信号（命名的自动重置事件）
+pub struct ShowRequests(isize);
+
+impl ShowRequests {
+    /// 阻塞等待下一次显示请求；句柄失效时返回 false
+    pub fn wait(&self) -> bool {
+        unsafe { WaitForSingleObject(HANDLE(self.0 as *mut _), INFINITE).0 == 0 }
+    }
+}
+
+/// 单实例：第一个实例返回 `Some`，用来接收之后的"请显示"请求；
+/// 已经有实例在运行时，通知它显示出来并返回 `None`（调用方应直接退出）。
+pub fn acquire_single_instance() -> Option<ShowRequests> {
+    unsafe {
+        let event = CreateEventW(None, false, false, w!(r"Local\Tessel.ShowRequest")).ok()?;
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            // 我们是用户刚启动的进程，拥有前台权限；把它让给已经在运行的那个实例
+            let _ = AllowSetForegroundWindow(ASFW_ANY);
+            let _ = SetEvent(event);
+            return None;
+        }
+        Some(ShowRequests(event.0 as isize))
+    }
 }

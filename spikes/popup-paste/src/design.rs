@@ -49,6 +49,16 @@ pub struct Palette {
     pub kbd_bg: Hsla,
     pub kbd_border: Hsla,
     pub code_bg: Hsla,
+    /// 顶部区域从上往下淡出的品牌色晕染
+    pub header_wash: Hsla,
+    pub search_bg: Hsla,
+    pub search_border: Hsla,
+    /// 搜索框的聚焦光晕
+    pub search_glow: Hsla,
+    /// "记录中"状态徽标
+    pub live_bg: Hsla,
+    pub live_text: Hsla,
+    pub live_dot: Hsla,
 }
 
 impl Palette {
@@ -72,6 +82,13 @@ impl Palette {
                 kbd_bg: c(0xFFFFFF0F),
                 kbd_border: c(0xFFFFFF1F),
                 code_bg: c(0x00000033),
+                header_wash: c(0x8B9BFF1F),
+                search_bg: c(0xFFFFFF0F),
+                search_border: c(0x8B9BFF66),
+                search_glow: c(0x8B9BFF26),
+                live_bg: c(0x34D3991F),
+                live_text: c(0x6EE7B7FF),
+                live_dot: c(0x34D399FF),
             }
         } else {
             Self {
@@ -92,6 +109,13 @@ impl Palette {
                 kbd_bg: c(0xFFFFFFCC),
                 kbd_border: c(0x0000001F),
                 code_bg: c(0x0000000A),
+                header_wash: c(0x4F6BED14),
+                search_bg: c(0xFFFFFFF2),
+                search_border: c(0x4F6BED59),
+                search_glow: c(0x4F6BED1A),
+                live_bg: c(0x10B98117),
+                live_text: c(0x047857FF),
+                live_dot: c(0x10B981FF),
             }
         }
     }

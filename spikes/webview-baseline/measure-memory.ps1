@@ -1,4 +1,4 @@
-param([int]$rootPid, [string]$label)
+﻿param([int]$rootPid, [string]$label)
 $all = Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name, PrivatePageCount
 $ids = New-Object System.Collections.Generic.HashSet[int]; [void]$ids.Add($rootPid)
 do { $added = $false; foreach ($p in $all) { if ($ids.Contains([int]$p.ParentProcessId) -and $ids.Add([int]$p.ProcessId)) { $added = $true } } } while ($added)

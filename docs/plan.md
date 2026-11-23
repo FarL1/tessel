@@ -1,8 +1,8 @@
-# MyPaste 项目方案与规划（初版）
+# Tessel · 拼贴 项目方案与规划（初版）
 
 > 版本：v0.1 草案，2026-11-23
 > 依据：[research.md](./research.md)
-> 项目名 "MyPaste" 是暂定代号，正式开源前再定。
+> 项目名：**Tessel · 拼贴**（2026-11-24 确定）。Tessel 源自 tessellation（镶嵌）：每次复制都是一块瓷砖，拼起来就是你的工作轨迹。中文名"拼贴"即 collage，正好含一个"贴"字。
 
 ---
 
@@ -55,11 +55,11 @@
 
 ```
 ┌─────────────────────────────── apps ───────────────────────────────┐
-│  desktop (GPUI/gpui-kit)   cli (mypaste)   mobile (Kotlin/Swift, 后期) │
+│  desktop (GPUI/gpui-kit)   cli (tessel)   mobile (Kotlin/Swift, 后期) │
 └──────────────┬──────────────────┬─────────────────┬────────────────┘
                │                  │                 │ UniFFI
 ┌──────────────▼──────────────────▼─────────────────▼────────────────┐
-│                        mypaste-core（门面 API）                      │
+│                        tessel-core（门面 API）                      │
 │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌──────────┐ ┌──────────────┐ │
 │  │ model   │ │ store   │ │ search  │ │ pipeline │ │ sync (iroh)  │ │
 │  │ 领域模型 │ │ SQLite  │ │ FTS5+   │ │ 识别/过滤 │ │ 配对/操作日志 │ │
@@ -77,19 +77,19 @@
 ### 3.1 Cargo workspace 结构
 
 ```
-mypaste/
+tessel/
 ├─ crates/
-│  ├─ mypaste-model      # ClipItem、Content、Op 等纯数据结构，不依赖平台
-│  ├─ mypaste-store      # SQLite 迁移、仓储、blob 存储、清理策略
-│  ├─ mypaste-search     # 查询语法解析、FTS5 / LIKE 召回、nucleo 排序
-│  ├─ mypaste-pipeline   # 内容识别（链接/颜色/代码/邮箱…）、隐私过滤、转换器
-│  ├─ mypaste-platform   # 平台 trait 定义 + 各平台实现（cfg 隔离）
-│  ├─ mypaste-sync       # 设备身份、配对、操作日志、iroh 协议
-│  ├─ mypaste-core       # 组装以上各层，对外提供 Service API 和事件流
-│  └─ mypaste-ffi        # UniFFI 导出（移动端阶段再做）
+│  ├─ tessel-model      # ClipItem、Content、Op 等纯数据结构，不依赖平台
+│  ├─ tessel-store      # SQLite 迁移、仓储、blob 存储、清理策略
+│  ├─ tessel-search     # 查询语法解析、FTS5 / LIKE 召回、nucleo 排序
+│  ├─ tessel-pipeline   # 内容识别（链接/颜色/代码/邮箱…）、隐私过滤、转换器
+│  ├─ tessel-platform   # 平台 trait 定义 + 各平台实现（cfg 隔离）
+│  ├─ tessel-sync       # 设备身份、配对、操作日志、iroh 协议
+│  ├─ tessel-core       # 组装以上各层，对外提供 Service API 和事件流
+│  └─ tessel-ffi        # UniFFI 导出（移动端阶段再做）
 ├─ apps/
 │  ├─ desktop            # GPUI 应用：窗口、托盘、热键、设置
-│  └─ cli                # mypaste list/search/copy/paste-next …
+│  └─ cli                # tessel list/search/copy/paste-next …
 ├─ docs/
 └─ xtask/                # 构建、打包、发布脚本
 ```
@@ -220,7 +220,7 @@ ClipItem
 ### 5.6 扩展性（分阶段推进）
 
 1. **M1**：内部 `Action` / `Transformer` trait 和管线，内置动作都通过它实现，相当于"先吃自己的狗粮"。
-2. **M2**：CLI（`mypaste search/copy/paste-next/push`）+ 本地 IPC（命名管道，JSON-RPC），方便 AutoHotkey、启动器、脚本集成。
+2. **M2**：CLI（`tessel search/copy/paste-next/push`）+ 本地 IPC（命名管道，JSON-RPC），方便 AutoHotkey、启动器、脚本集成。
 3. **v2**：Extism WASM 插件，可以注册 Transformer、Action 和内容识别器。插件运行在沙箱里，网络、文件等能力必须显式授权。
 4. **以后**：MCP Server（把剪贴板作为 AI 的上下文，用户控制共享哪些内容）。
 
@@ -285,7 +285,7 @@ UI 技术待定：Android 用 Jetpack Compose，iOS 用 SwiftUI，这是最自�
 
 ### M4：移动端
 
-- 搭建 `mypaste-ffi`（UniFFI）
+- 搭建 `tessel-ffi`（UniFFI）
 - Android：App + IME + 同步
 - iOS：App + 键盘扩展 + 分享扩展 + 同步
 
@@ -316,7 +316,7 @@ UI 技术待定：Android 用 Jetpack Compose，iOS 用 SwiftUI，这是最自�
 
 | 事项 | 什么时候决定 |
 |---|---|
-| 正式项目名 | M2 公开发布前 |
+| ~~正式项目名~~ | ✅ 已定：Tessel · 拼贴 |
 | 开源协议（MIT/Apache 还是 GPL） | 第一次提交代码前 |
 | 默认唤起热键 | M1 |
 | 托盘库选 gpui-tray 还是 tray-icon | M0 |

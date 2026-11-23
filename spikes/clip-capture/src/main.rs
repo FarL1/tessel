@@ -101,7 +101,7 @@ mod win {
 
         unsafe {
             let hinstance: HINSTANCE = GetModuleHandleW(None)?.into();
-            let class_name = w!("MyPasteClipSpike");
+            let class_name = w!("TesselClipSpike");
             let wc = WNDCLASSW {
                 lpfnWndProc: Some(wndproc),
                 hInstance: hinstance,
@@ -115,7 +115,7 @@ mod win {
             let hwnd = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 class_name,
-                w!("MyPaste clipboard listener"),
+                w!("Tessel clipboard listener"),
                 WS_OVERLAPPED,
                 0,
                 0,

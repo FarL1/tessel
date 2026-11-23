@@ -1,7 +1,7 @@
-param([int]$seconds, [string]$out)
+﻿param([int]$seconds, [string]$out)
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 $f = New-Object Windows.Forms.Form
-$f.Text = "MyPaste Paste Target"; $f.TopMost = $true; $f.Width = 640; $f.Height = 220
+$f.Text = "Tessel Paste Target"; $f.TopMost = $true; $f.Width = 640; $f.Height = 220
 $f.StartPosition = 'CenterScreen'
 $tb = New-Object Windows.Forms.TextBox
 $tb.Multiline = $true; $tb.Dock = 'Fill'

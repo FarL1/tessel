@@ -1,0 +1,15 @@
+[package]
+name = "icon-gen"
+description = "Render brand SVGs to PNG sizes and a multi-size Windows .ico"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+resvg = "0.50"
+ico = "0.6"
+
+[lints]
+workspace = true

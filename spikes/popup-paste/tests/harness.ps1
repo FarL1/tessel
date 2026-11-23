@@ -1,4 +1,4 @@
-param([int]$popupPid)
+﻿param([int]$popupPid)
 Add-Type @"
 using System; using System.Runtime.InteropServices;
 public class K {
@@ -74,7 +74,7 @@ $out = "$env:TEMP\paste-target.txt"; Remove-Item $out -ErrorAction SilentlyConti
 $t = Start-Process powershell -ArgumentList "-NoProfile -STA -ExecutionPolicy Bypass -File `"$PSScriptRoot\target-window.ps1`" 25 `"$out`"" -PassThru -WindowStyle Hidden
 $deadline = (Get-Date).AddSeconds(8)
 $form = [IntPtr]::Zero
-while ((Get-Date) -lt $deadline) { $form = [K]::FindWindowW([NullString]::Value, "MyPaste Paste Target"); if ($form -ne [IntPtr]::Zero) { break }; Start-Sleep -Milliseconds 100 }
+while ((Get-Date) -lt $deadline) { $form = [K]::FindWindowW([NullString]::Value, "Tessel Paste Target"); if ($form -ne [IntPtr]::Zero) { break }; Start-Sleep -Milliseconds 100 }
 "form hwnd=$form" 
 Start-Sleep -Milliseconds 800
 for ($i = 0; $i -lt 15 -and [K]::FgPid() -ne $t.Id; $i++) {
