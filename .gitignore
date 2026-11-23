@@ -7,3 +7,6 @@
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# 本机专用的 cargo 配置（如自定义 target-dir）
+/.cargo/config.toml

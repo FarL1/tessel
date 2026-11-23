@@ -138,9 +138,22 @@ impl Render for ImeSpike {
     }
 }
 
+/// 启动阶段计时（设置环境变量 MYPASTE_TRACE=1 时打印）
+fn trace(start: std::time::Instant, stage: &str) {
+    if std::env::var_os("MYPASTE_TRACE").is_some() {
+        eprintln!("[trace] {:>7.1}ms  {stage}", start.elapsed().as_secs_f64() * 1000.0);
+    }
+}
+
 fn main() {
-    gpui_kit::application().run(move |cx| {
+    let start = std::time::Instant::now();
+    trace(start, "main()");
+    let app = gpui_kit::application();
+    trace(start, "application() 构建完成");
+    app.run(move |cx| {
+        trace(start, "进入 run 回调");
         gpui_kit::init(cx);
+        trace(start, "gpui_kit::init 完成");
 
         let bounds = Bounds::centered(None, size(px(720.), px(560.)), cx);
         let options = WindowOptions {
@@ -152,11 +165,16 @@ fn main() {
             ..Default::default()
         };
 
-        gpui_kit::open_window(options, cx, |window, cx| {
+        let (window_handle, _) = gpui_kit::open_window(options, cx, |window, cx| {
+            trace(start, "原生窗口已创建，开始构建视图");
             cx.new(|cx| ImeSpike::new(window, cx))
         })
         .expect("failed to open window");
+        trace(start, "open_window 返回");
 
+        let _ = window_handle.update(cx, |_, window, _| {
+            window.on_next_frame(move |_, _| trace(start, "首帧渲染完成"));
+        });
         cx.activate(true);
     });
 }

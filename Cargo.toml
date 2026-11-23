@@ -4,6 +4,8 @@ members = [
     "spikes/ime-input",
     "spikes/search-bench",
     "spikes/clip-capture",
+    "spikes/popup-paste",
+    "spikes/startup-probe",
 ]
 
 [workspace.package]
