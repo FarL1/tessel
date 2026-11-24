@@ -14,6 +14,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 
 use crate::classify::classify_text;
 use crate::model::{Clip, Filter, ImageInfo, Kind, NewClip, Payload, RichFormats};
+use crate::query::Query;
 use crate::time::now_ms;
 
 pub type Result<T> = rusqlite::Result<T>;
@@ -336,10 +337,22 @@ impl Store {
 
     /// 搜索。空格分隔多个关键词（AND）；结果按最近使用倒序。
     /// 返回的 `content` 最多 `LIST_CONTENT_CHARS` 个字符。
+    /// `query` 支持前缀过滤语法（`app:` `type:` `is:` `-词`），见 [`Query`]
     pub fn search(&self, query: &str, filter: Filter, limit: usize) -> Result<Vec<Clip>> {
-        let (long, short): (Vec<&str>, Vec<&str>) = query
-            .split_whitespace()
+        let q = Query::parse(query);
+        let (long, short): (Vec<&str>, Vec<&str>) = q
+            .terms
+            .iter()
+            .map(String::as_str)
             .partition(|t| t.chars().count() >= 3);
+        let like = |s: &str| {
+            format!(
+                "%{}%",
+                s.replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            )
+        };
 
         let mut conds: Vec<String> = Vec::new();
         let mut args: Vec<String> = Vec::new();
@@ -351,14 +364,27 @@ impl Store {
             }
             Filter::Pinned => conds.push("c.pinned = 1".into()),
         }
+        if let Some(k) = q.kind {
+            conds.push("c.kind = ?".into());
+            args.push(k.as_str().into());
+        }
+        if q.pinned {
+            conds.push("c.pinned = 1".into());
+        }
+        if q.rich {
+            conds.push("(c.html IS NOT NULL OR c.rtf IS NOT NULL)".into());
+        }
+        for s in &q.sources {
+            conds.push("c.source LIKE ? ESCAPE '\\'".into());
+            args.push(like(s));
+        }
         for s in &short {
             conds.push("c.content LIKE ? ESCAPE '\\'".into());
-            args.push(format!(
-                "%{}%",
-                s.replace('\\', "\\\\")
-                    .replace('%', "\\%")
-                    .replace('_', "\\_")
-            ));
+            args.push(like(s));
+        }
+        for s in &q.excluded {
+            conds.push("c.content NOT LIKE ? ESCAPE '\\'".into());
+            args.push(like(s));
         }
         let where_extra: String = conds.iter().map(|c| format!(" AND {c}")).collect();
 
@@ -614,6 +640,37 @@ mod tests {
         let counts = store.counts().unwrap();
         assert_eq!(counts.total, 4);
         assert_eq!(counts.get(Filter::Kind(Kind::Text)), 2);
+    }
+
+    #[test]
+    fn search_prefix_filters() {
+        let mut store = temp_store("prefix");
+        store.record(text("报销单 3 月", "飞书")).unwrap();
+        store.record(text("报销草稿", "飞书")).unwrap();
+        store.record(text("报销流程说明", "微信")).unwrap();
+        store
+            .record(text("https://example.com/报销", "Google Chrome"))
+            .unwrap();
+        let hits = |q: &str| -> Vec<String> {
+            store
+                .search(q, Filter::All, 10)
+                .unwrap()
+                .into_iter()
+                .map(|c| c.content)
+                .collect()
+        };
+        assert_eq!(hits("app:飞书").len(), 2);
+        assert_eq!(hits("app:chrome type:link").len(), 1);
+        assert_eq!(hits("报销 -草稿 app:飞书"), vec!["报销单 3 月"]);
+        assert_eq!(hits("类型:链接"), vec!["https://example.com/报销"]);
+        let uuid = store.search("流程", Filter::All, 1).unwrap()[0]
+            .uuid
+            .clone();
+        store.set_pinned(&uuid, true).unwrap();
+        assert_eq!(hits("is:收藏"), vec!["报销流程说明"]);
+        // 长关键词走全文搜索，同样能和前缀组合
+        assert_eq!(hits("流程说明 app:微信").len(), 1);
+        assert_eq!(hits("流程说明 app:飞书").len(), 0);
     }
 
     #[test]

@@ -293,7 +293,8 @@ UI 技术待定：Android 用 Jetpack Compose，iOS 用 SwiftUI，这是最自�
 
 - [x] 动作菜单（`Ctrl+K`）：粘贴 / 只复制 / 打开 / 收藏 / 删除，以及内置转换（JSON、链接追踪参数、URL 解码、颜色格式、空白、合并行、大小写），转换逻辑在 `tessel-core::transform`，可单测
 - [x] 快速编号粘贴（M1 已有 `Ctrl+1–9`）
-- [ ] 粘贴队列、前缀过滤语法
+- [x] 前缀过滤语法：`app:` / `type:` / `is:pinned|rich` / `-词`（`tessel-core::query`）
+- [ ] 粘贴队列
 - 片段和模板（带变量，比如 `{date}`、`{clipboard}`）
 - 标签、备注；拼音搜索（评估后决定）
 - 数据导入导出；自动更新（候选方案：Velopack）

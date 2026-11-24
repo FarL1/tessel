@@ -12,7 +12,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use tessel_clipboard::WriteContent;
 use tessel_core::time::{now_ms, relative as relative_time};
-use tessel_core::{Clip, Config, Counts, Filter, Kind, Store, ThemePref};
+use tessel_core::{Clip, Config, Counts, Filter, Kind, Query, Store, ThemePref};
 
 use crate::action_menu::{self, ActionMenu, MenuAction};
 use crate::design::{self, Palette, parse_hex_color};
@@ -83,6 +83,8 @@ pub struct Popup {
     config: Config,
     search: Entity<InputState>,
     query: String,
+    /// 结果高亮用的关键词（去掉了 app: type: 之类的前缀过滤）
+    highlight: String,
     filter_ix: usize,
     items: Vec<Clip>,
     /// 当前选中项的完整内容（列表里的内容是截断过的）
@@ -120,7 +122,10 @@ impl Popup {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let search = cx.new(|cx| InputState::new(window, cx).placeholder("搜索剪贴板历史…"));
+        let search = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("搜索剪贴板历史…   支持 app:微信  type:链接  -排除")
+        });
         let menu_search = cx.new(|cx| InputState::new(window, cx).placeholder("搜索动作…"));
 
         let subscriptions = vec![
@@ -135,6 +140,7 @@ impl Popup {
             cx.subscribe_in(&search, window, |this, state, event, _window, cx| {
                 if let InputEvent::Change = event {
                     this.query = state.read(cx).value().to_string();
+                    this.highlight = Query::parse(&this.query).highlight();
                     this.selected = 0;
                     this.scroll.scroll_to_item(0, ScrollStrategy::Top);
                     this.refresh(cx);
@@ -179,6 +185,7 @@ impl Popup {
             config,
             search,
             query: String::new(),
+            highlight: String::new(),
             filter_ix: 0,
             items: Vec::new(),
             preview: None,
@@ -333,6 +340,7 @@ impl Popup {
         self.status = None;
         self.show_count += 1;
         self.query.clear();
+        self.highlight.clear();
         self.scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.refresh(cx);
 
@@ -1068,7 +1076,7 @@ impl Popup {
                             .text_sm()
                             .text_color(p.text)
                             .truncate()
-                            .child(highlighted(clip.title(), &self.query, &p)),
+                            .child(highlighted(clip.title(), &self.highlight, &p)),
                     )
                     .child(
                         div()
@@ -1098,7 +1106,10 @@ impl Popup {
         let (title, subtitle) = if self.counts.total == 0 {
             ("还没有任何记录", "复制任意内容，它就会出现在这里")
         } else {
-            ("没有找到匹配的内容", "换个关键词，或按 Tab 切换分类")
+            (
+                "没有找到匹配的内容",
+                "换个关键词、按 Tab 切换分类，或用 app:  type:  is:  -词 过滤",
+            )
         };
         v_flex()
             .flex_1()
@@ -1118,7 +1129,7 @@ impl Popup {
                 .text_base()
                 .line_height(relative(1.65))
                 .text_color(p.text)
-                .child(highlighted(preview_text(&clip.content), &self.query, p))
+                .child(highlighted(preview_text(&clip.content), &self.highlight, p))
                 .into_any_element(),
             Kind::Code => div()
                 .p_3()
