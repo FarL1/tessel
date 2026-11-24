@@ -4,6 +4,10 @@
 
 ## [未发布]
 
+## [0.1.2] - 2026-11-24
+
+M2 的第一批功能（内部测试版）。
+
 ### 新增
 
 - 动作菜单（`Ctrl+K`）：针对选中的一条，列出可以做的事和可用的转换，每项都显示结果预览，可以输入关键词筛选
@@ -60,6 +64,7 @@ M1（Windows 本地版）完成，第一个可日常使用的版本。
 - 设置窗口与 `config.toml`（热加载、保留注释）
 - 安装包（Velopack，按用户安装，卸载保留数据）
 
-[未发布]: https://github.com/OWNER/tessel/compare/v0.1.1...HEAD
+[未发布]: https://github.com/OWNER/tessel/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/OWNER/tessel/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/OWNER/tessel/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/OWNER/tessel/releases/tag/v0.1.0
