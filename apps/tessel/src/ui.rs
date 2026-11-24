@@ -38,6 +38,9 @@ actions!(
         OpenActionMenu,
         ToggleQueue,
         StartEdit,
+        EditNote,
+        SaveNote,
+        CancelNote,
         SaveEdit,
         SaveEditAndPaste,
         CancelEdit
@@ -47,6 +50,8 @@ actions!(
 const CONTEXT: &str = "ClipPopup";
 /// 编辑记录时预览区变成编辑框，键位上下文是 `ClipPopup > ClipEditor`
 const EDITOR_CONTEXT: &str = "ClipEditor";
+/// 备注输入框（F2）
+const NOTE_CONTEXT: &str = "NoteEditor";
 /// 一次最多加载的条数。列表是虚拟列表（只渲染可见的行），条数主要影响内存：
 /// 列表查询的内容已截断为 4000 字符，预览和粘贴时再按需读取完整内容。
 const RESULT_LIMIT: usize = 1000;
@@ -76,9 +81,17 @@ pub fn bind_keys(cx: &mut App) {
             KeyBinding::new("ctrl-k", OpenActionMenu, c),
             KeyBinding::new("ctrl-q", ToggleQueue, c),
             KeyBinding::new("ctrl-e", StartEdit, c),
+            KeyBinding::new("f2", EditNote, c),
         ]);
     }
     // 编辑框里：Enter 是换行，Esc 只退出编辑（不关闭弹窗）
+    for ctx in ["NoteEditor > Input", NOTE_CONTEXT] {
+        let c = Some(ctx);
+        bindings.extend([
+            KeyBinding::new("enter", SaveNote, c),
+            KeyBinding::new("escape", CancelNote, c),
+        ]);
+    }
     for ctx in ["ClipEditor > Input", EDITOR_CONTEXT] {
         let c = Some(ctx);
         bindings.extend([
@@ -138,6 +151,9 @@ pub struct Popup {
     /// 正在编辑的记录
     editing: Option<String>,
     editor: Entity<TextareaState>,
+    /// 正在写备注的记录（F2）
+    note_for: Option<String>,
+    note_input: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -159,6 +175,10 @@ impl Popup {
         });
         let menu_search = cx.new(|cx| InputState::new(window, cx).placeholder("搜索动作…"));
         let editor = cx.new(|cx| TextareaState::new(window, cx));
+        let note_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("写点备注，用 #标签 分类，例如：家里的地址 #常用")
+        });
 
         let subscriptions = vec![
             cx.subscribe_in(&menu_search, window, |this, state, event, _window, cx| {
@@ -191,6 +211,9 @@ impl Popup {
                     // GPUI 处理激活时会重置内部焦点，激活事件可能晚于 show() 到达，这里重新聚焦
                     if this.editing.is_some() {
                         this.editor.update(cx, |state, cx| state.focus(window, cx));
+                    } else if this.note_for.is_some() {
+                        this.note_input
+                            .update(cx, |state, cx| state.focus(window, cx));
                     } else {
                         let input = if this.menu.is_some() {
                             &this.menu_search
@@ -246,6 +269,8 @@ impl Popup {
             queue_busy: false,
             editing: None,
             editor,
+            note_for: None,
+            note_input,
             _subscriptions: subscriptions,
         };
         this.apply_theme(window, cx);
@@ -396,6 +421,7 @@ impl Popup {
         self.visible = true;
         self.menu = None;
         self.editing = None;
+        self.note_for = None;
         self.selected = 0;
         self.filter_ix = 0;
         self.status = None;
@@ -457,6 +483,7 @@ impl Popup {
         self.menu = None;
         // 没保存的修改直接丢弃（点到外面、按热键关闭时）
         self.editing = None;
+        self.note_for = None;
         win::hide(self.hwnd);
         if restore_focus && let Some(prev) = self.prev_foreground {
             win::focus(prev);
@@ -584,7 +611,7 @@ impl Popup {
         if self.config.queue_hotkey.is_empty() {
             "先在设置里设定粘贴队列热键".into()
         } else {
-            format!("按 {} 依次粘贴", self.config.queue_hotkey)
+            format!("{} 粘贴", self.config.queue_hotkey)
         }
     }
 
@@ -603,7 +630,7 @@ impl Popup {
         } else {
             self.queue.push_back(clip.uuid.clone());
             format!(
-                "已加入粘贴队列第 {} 条 · {}",
+                "已排队第 {} 条 · {}",
                 self.queue.len(),
                 self.queue_hotkey_hint()
             )
@@ -790,14 +817,76 @@ impl Popup {
         }
     }
 
+    /// 正在编辑正文或备注：这时不响应列表上的快捷键
+    fn busy(&self) -> bool {
+        self.editing.is_some() || self.note_for.is_some()
+    }
+
+    // ── 备注 ──
+
+    fn start_note(&mut self, pos: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(clip) = self.items.get(pos) else {
+            return;
+        };
+        let (uuid, note) = (clip.uuid.clone(), clip.note.clone().unwrap_or_default());
+        self.menu = None;
+        self.selected = pos;
+        self.note_for = Some(uuid);
+        self.note_input.update(cx, |state, cx| {
+            state.set_value(note, window, cx);
+            state.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn close_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.note_for = None;
+        self.search.update(cx, |state, cx| state.focus(window, cx));
+        cx.notify();
+    }
+
+    fn save_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(uuid) = self.note_for.clone() else {
+            return;
+        };
+        let note = self.note_input.read(cx).value().to_string();
+        self.status = Some(
+            match self.store.set_note(&uuid, &note) {
+                Ok(()) if note.trim().is_empty() => "已删除备注".to_string(),
+                Ok(()) => "已保存备注".to_string(),
+                Err(err) => format!("保存备注失败：{err}"),
+            }
+            .into(),
+        );
+        self.close_note(window, cx);
+        self.refresh(cx);
+        if let Some(pos) = self.items.iter().position(|c| c.uuid == uuid) {
+            self.selected = pos;
+        }
+    }
+
+    fn on_edit_note(&mut self, _: &EditNote, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.busy() {
+            self.start_note(self.selected, window, cx);
+        }
+    }
+
+    fn on_save_note(&mut self, _: &SaveNote, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_note(window, cx);
+    }
+
+    fn on_cancel_note(&mut self, _: &CancelNote, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_note(window, cx);
+    }
+
     fn on_toggle_queue(&mut self, _: &ToggleQueue, _: &mut Window, cx: &mut Context<Self>) {
-        if self.editing.is_none() {
+        if !self.busy() {
             self.toggle_queue(self.selected, cx);
         }
     }
 
     fn on_start_edit(&mut self, _: &StartEdit, window: &mut Window, cx: &mut Context<Self>) {
-        if self.editing.is_none() {
+        if !self.busy() {
             self.start_edit(self.selected, window, cx);
         }
     }
@@ -848,7 +937,7 @@ impl Popup {
         let mods = &event.keystroke.modifiers;
         debug_log(format!("[event] key_down {key:?} {mods:?}"));
         if self.menu.is_none()
-            && self.editing.is_none()
+            && !self.busy()
             && mods.control
             && key.len() == 1
             && (b'1'..=b'9').contains(&key.as_bytes()[0])
@@ -867,14 +956,14 @@ impl Popup {
     }
 
     fn on_next_filter(&mut self, _: &NextFilter, _: &mut Window, cx: &mut Context<Self>) {
-        if self.editing.is_some() {
+        if self.busy() {
             return;
         }
         self.select_filter(self.filter_ix + 1, cx);
     }
 
     fn on_prev_filter(&mut self, _: &PrevFilter, _: &mut Window, cx: &mut Context<Self>) {
-        if self.editing.is_some() {
+        if self.busy() {
             return;
         }
         self.select_filter(self.filter_ix + Filter::ALL.len() - 1, cx);
@@ -885,21 +974,21 @@ impl Popup {
     }
 
     fn on_paste(&mut self, _: &PasteSelected, _: &mut Window, cx: &mut Context<Self>) {
-        if self.editing.is_some() {
+        if self.busy() {
             return;
         }
         self.paste(self.selected, false, cx);
     }
 
     fn on_paste_plain(&mut self, _: &PastePlainText, _: &mut Window, cx: &mut Context<Self>) {
-        if self.editing.is_some() {
+        if self.busy() {
             return;
         }
         self.paste(self.selected, true, cx);
     }
 
     fn on_toggle_pin(&mut self, _: &TogglePin, _: &mut Window, cx: &mut Context<Self>) {
-        if self.editing.is_some() {
+        if self.busy() {
             return;
         }
         self.toggle_pin(self.selected, cx);
@@ -926,7 +1015,7 @@ impl Popup {
     }
 
     fn on_delete(&mut self, _: &DeleteClip, _: &mut Window, cx: &mut Context<Self>) {
-        if self.editing.is_some() {
+        if self.busy() {
             return;
         }
         self.delete(self.selected, cx);
@@ -955,7 +1044,7 @@ impl Popup {
     }
 
     fn on_open_menu(&mut self, _: &OpenActionMenu, window: &mut Window, cx: &mut Context<Self>) {
-        if self.editing.is_some() {
+        if self.busy() {
             return;
         }
         let Some(clip) = self.full_clip(self.selected) else {
@@ -1051,13 +1140,14 @@ impl Popup {
             MenuAction::TogglePin => self.toggle_pin(pos, cx),
             MenuAction::Delete => self.delete(pos, cx),
             MenuAction::Edit => self.start_edit(pos, window, cx),
+            MenuAction::EditNote => self.start_note(pos, window, cx),
             MenuAction::ToggleQueue => self.toggle_queue(pos, cx),
             MenuAction::ClearQueue => self.clear_queue(cx),
         }
     }
 
     fn on_open(&mut self, _: &OpenClip, _: &mut Window, cx: &mut Context<Self>) {
-        if self.editing.is_some() {
+        if self.busy() {
             return;
         }
         self.open(self.selected, cx);
@@ -1175,6 +1265,10 @@ fn match_ranges(text: &str, query: &str) -> Vec<Range<usize>> {
             }
             start = e;
         }
+    }
+    // 拼音：hyjy → 会议纪要
+    for term in query.split_whitespace() {
+        ranges.extend(tessel_core::pinyin_index::match_ranges(text, term));
     }
     ranges.sort_by_key(|r| r.start);
     // 合并重叠区间，StyledText 要求高亮区间有序且不重叠
@@ -1361,11 +1455,26 @@ impl Popup {
         let clip = &self.items[pos];
         let is_selected = pos == self.selected;
         let queue_pos = self.queue.iter().position(|u| *u == clip.uuid);
-        let meta = format!(
-            "{} · {}",
-            clip.source.as_deref().unwrap_or("未知来源"),
-            relative_time(clip.last_used_at, self.now)
-        );
+        // 有备注时：第一行显示备注，第二行显示内容
+        let (title, meta) = match &clip.note {
+            Some(note) => (
+                note.clone(),
+                format!(
+                    "{} · {}",
+                    clip.title(),
+                    relative_time(clip.last_used_at, self.now)
+                ),
+            ),
+            None => (
+                clip.title(),
+                format!(
+                    "{} · {}",
+                    clip.source.as_deref().unwrap_or("未知来源"),
+                    relative_time(clip.last_used_at, self.now)
+                ),
+            ),
+        };
+        let has_note = clip.note.is_some();
 
         h_flex()
             .id(("row", clip.seq as usize))
@@ -1413,11 +1522,20 @@ impl Popup {
                     .min_w_0()
                     .gap_0p5()
                     .child(
-                        div()
-                            .text_sm()
-                            .text_color(p.text)
-                            .truncate()
-                            .child(highlighted(clip.title(), &self.highlight, &p)),
+                        h_flex()
+                            .min_w_0()
+                            .gap_1()
+                            .when(has_note, |d| {
+                                d.child(Icon::new(Lucide::StickyNote).xsmall().text_color(p.accent))
+                            })
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .text_sm()
+                                    .text_color(p.text)
+                                    .truncate()
+                                    .child(highlighted(title, &self.highlight, &p)),
+                            ),
                     )
                     .child(
                         div()
@@ -1729,6 +1847,25 @@ impl Popup {
                         )
                     }),
             )
+            .when_some(clip.note.clone(), |d, note| {
+                d.child(
+                    h_flex()
+                        .px_3()
+                        .py_2()
+                        .gap_2()
+                        .rounded(design::RADIUS_MD)
+                        .bg(p.accent_soft)
+                        .text_sm()
+                        .text_color(p.text)
+                        .child(Icon::new(Lucide::StickyNote).small().text_color(p.accent))
+                        .child(div().flex_1().min_w_0().child(highlighted(
+                            note,
+                            &self.highlight,
+                            p,
+                        )))
+                        .child(div().flex_none().child(kbd("F2", p))),
+                )
+            })
             .child(
                 div()
                     .id("preview-body")
@@ -1738,6 +1875,67 @@ impl Popup {
                     .child(body),
             )
             .child(div().text_xs().text_color(p.text_faint).child(stats))
+    }
+
+    /// 备注输入框（浮在弹窗底部右侧，和动作菜单同一位置）
+    fn render_note(&self, uuid: &str, p: &Palette) -> impl IntoElement {
+        let title = self
+            .items
+            .iter()
+            .find(|c| c.uuid == uuid)
+            .map(|c| c.title())
+            .unwrap_or_default();
+        v_flex()
+            .id("note-panel")
+            .key_context(NOTE_CONTEXT)
+            .absolute()
+            .right(px(14.))
+            .bottom(px(46.))
+            .w(px(420.))
+            .p_3()
+            .gap_2()
+            .rounded(design::RADIUS_LG)
+            .bg(p.popover)
+            .border_1()
+            .border_color(p.border)
+            .shadow_lg()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                h_flex()
+                    .gap_1p5()
+                    .text_xs()
+                    .text_color(p.text_faint)
+                    .child(Icon::new(Lucide::StickyNote).xsmall())
+                    .child(div().flex_none().child("备注"))
+                    .child(div().flex_none().child("·"))
+                    .child(div().min_w_0().truncate().child(title)),
+            )
+            .child(
+                div()
+                    .px_2()
+                    .h(px(34.))
+                    .flex()
+                    .items_center()
+                    .rounded(design::RADIUS_MD)
+                    .bg(p.search_bg)
+                    .border_1()
+                    .border_color(p.search_border)
+                    .child(Input::new(&self.note_input).appearance(false).small()),
+            )
+            .child(
+                h_flex()
+                    .gap_3()
+                    .text_xs()
+                    .text_color(p.text_muted)
+                    .child(hint(&["↵"], "保存", p))
+                    .child(hint(&["Esc"], "取消", p))
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_color(p.text_faint)
+                            .child("清空后保存 = 删除备注"),
+                    ),
+            )
     }
 
     fn render_editor(&self, p: &Palette) -> impl IntoElement {
@@ -1865,7 +2063,8 @@ impl Popup {
                         .text_color(p.accent_text)
                         .child(status.clone()),
                 ),
-                (None, None) => d.child(hint(&["Esc"], "关闭", p)),
+                (None, None) if self.editing.is_none() => d.child(hint(&["Esc"], "关闭", p)),
+                (None, None) => d,
             })
     }
 }
@@ -1887,6 +2086,10 @@ impl Render for Popup {
                 .map(|clip| self.render_preview(clip, &p).into_any_element())
         };
         let empty = self.items.is_empty();
+        let note_panel = self
+            .note_for
+            .as_ref()
+            .map(|uuid| self.render_note(uuid, &p));
         let menu = self.menu.as_ref().map(|menu| {
             let view = cx.entity().downgrade();
             menu.render(&self.menu_search, &p, move |pos, window, cx| {
@@ -1949,6 +2152,9 @@ impl Render for Popup {
             .on_action(cx.listener(Self::on_save_edit))
             .on_action(cx.listener(Self::on_save_edit_and_paste))
             .on_action(cx.listener(Self::on_cancel_edit))
+            .on_action(cx.listener(Self::on_edit_note))
+            .on_action(cx.listener(Self::on_save_note))
+            .on_action(cx.listener(Self::on_cancel_note))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.on_key_down(event, cx);
             }))
@@ -1980,6 +2186,21 @@ impl Render for Popup {
                         ),
                 )
                 .child(menu)
+            })
+            .when_some(note_panel, |d, panel| {
+                d.child(
+                    div()
+                        .id("note-scrim")
+                        .absolute()
+                        .inset_0()
+                        .occlude()
+                        .bg(p.scrim)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, window, cx| this.close_note(window, cx)),
+                        ),
+                )
+                .child(panel)
             })
             .with_animation(
                 ("panel-show", self.show_count),

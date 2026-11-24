@@ -5,6 +5,7 @@
 pub mod classify;
 pub mod config;
 pub mod model;
+pub mod pinyin_index;
 pub mod query;
 pub mod store;
 pub mod time;

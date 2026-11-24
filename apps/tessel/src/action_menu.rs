@@ -56,6 +56,7 @@ gpui_kit::assets::icon_assets!(
         ListPlus,
         ListX,
         SquarePen,
+        StickyNote,
     ]
 );
 
@@ -88,6 +89,7 @@ pub enum MenuAction {
     TogglePin,
     Delete,
     Edit,
+    EditNote,
     ToggleQueue,
     ClearQueue,
 }
@@ -264,6 +266,24 @@ impl ActionMenu {
                     .keywords("edit modify 修改"),
             );
         }
+        entries.push(
+            Entry::new(
+                A::EditNote,
+                if clip.note.is_some() {
+                    "修改备注"
+                } else {
+                    "添加备注"
+                },
+                IconName::StickyNote,
+                Group::Manage,
+            )
+            .detail(match &clip.note {
+                Some(note) => note.clone(),
+                None => "给这条起个名字，用 #标签 分类，之后搜得到".to_string(),
+            })
+            .keys(&["F2"])
+            .keywords("note tag rename 备注 标签 重命名"),
+        );
         entries.push(
             match queued {
                 Some(i) => Entry::new(

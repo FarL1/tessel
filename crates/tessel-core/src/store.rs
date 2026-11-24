@@ -6,6 +6,7 @@
 //! - FTS5 trigram 只索引前 20000 个字符，避免超长文本让索引膨胀。
 //! - 搜索：≥3 个字符的词走 FTS 短语，1–2 个字符的词走 LIKE（trigram 匹配不了短词）。
 //! - 图片以内容哈希命名存成 PNG 文件，数据库里只存路径和尺寸。
+//! - 全文索引的内容 = 正文前 20000 字 + 备注 + 拼音索引（v3 起），由触发器维护。
 //! - 同一个数据库可以被多个连接同时打开（UI 线程读、采集线程写），WAL 模式。
 
 use std::path::{Path, PathBuf};
@@ -14,6 +15,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 
 use crate::classify::classify_text;
 use crate::model::{Clip, Filter, ImageInfo, Kind, NewClip, Payload, RichFormats};
+use crate::pinyin_index;
 use crate::query::Query;
 use crate::time::now_ms;
 
@@ -26,7 +28,7 @@ const PRUNE_EVERY: u32 = 50;
 /// 默认最多保留的未收藏记录数
 pub const DEFAULT_KEEP: usize = 5_000;
 
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
 /// v1 → v2：文本的富格式
 const MIGRATE_V2: &str =
@@ -64,13 +66,69 @@ CREATE TRIGGER IF NOT EXISTS clips_ad AFTER DELETE ON clips BEGIN
 END;
 ";
 
+/// 全文索引里一条记录的文本。`row` 是触发器里的 `new.` / `old.`，迁移时为空。
+/// 插入和删除必须用完全相同的表达式，否则外部内容表的索引会损坏。
+fn fts_text(row: &str) -> String {
+    format!(
+        "substr({row}content, 1, 20000) || char(10) || coalesce({row}note, '') \
+         || char(10) || coalesce({row}py, '')"
+    )
+}
+
+/// v3 的触发器：正文、备注、拼音任何一个变了都同步全文索引
+fn fts_triggers() -> String {
+    let (new, old) = (fts_text("new."), fts_text("old."));
+    format!(
+        "CREATE TRIGGER clips_ai AFTER INSERT ON clips BEGIN
+             INSERT INTO clip_fts(rowid, content) VALUES (new.seq, {new});
+         END;
+         CREATE TRIGGER clips_ad AFTER DELETE ON clips BEGIN
+             INSERT INTO clip_fts(clip_fts, rowid, content) VALUES ('delete', old.seq, {old});
+         END;
+         CREATE TRIGGER clips_au AFTER UPDATE OF content, note, py ON clips BEGIN
+             INSERT INTO clip_fts(clip_fts, rowid, content) VALUES ('delete', old.seq, {old});
+             INSERT INTO clip_fts(rowid, content) VALUES (new.seq, {new});
+         END;"
+    )
+}
+
+/// v2 → v3：备注、拼音索引，全文索引改为包含这两项
+fn migrate_v3(tx: &rusqlite::Transaction) -> Result<()> {
+    tx.execute_batch(
+        "DROP TRIGGER IF EXISTS clips_ai;
+         DROP TRIGGER IF EXISTS clips_ad;
+         DROP TRIGGER IF EXISTS clips_au;
+         ALTER TABLE clips ADD COLUMN note TEXT;
+         ALTER TABLE clips ADD COLUMN py TEXT;",
+    )?;
+    let rows: Vec<(i64, String)> = tx
+        .prepare("SELECT seq, substr(content, 1, 2000) FROM clips WHERE kind != 'image'")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_>>()?;
+    {
+        let mut update = tx.prepare("UPDATE clips SET py = ?1 WHERE seq = ?2")?;
+        for (seq, text) in rows {
+            if let Some(py) = pinyin_index::index_text(&text) {
+                update.execute(params![py, seq])?;
+            }
+        }
+    }
+    tx.execute_batch(&format!(
+        "INSERT INTO clip_fts(clip_fts) VALUES ('delete-all');
+         INSERT INTO clip_fts(rowid, content) SELECT seq, {} FROM clips;
+         {}",
+        fts_text(""),
+        fts_triggers()
+    ))
+}
+
 /// 列表查询只取内容的前 N 个字符（标题、文件数、颜色都够用），完整内容用 `get()` 按需读取
 pub const LIST_CONTENT_CHARS: usize = 4000;
 
-const LIST_COLUMNS: &str = "c.seq, c.uuid, c.kind, substr(c.content, 1, 4000), c.source,      c.created_at, c.last_used_at, c.use_count, c.pinned, c.lang, c.img_file, c.img_w, c.img_h, c.img_bytes, \n     (c.html IS NOT NULL OR c.rtf IS NOT NULL)";
+const LIST_COLUMNS: &str = "c.seq, c.uuid, c.kind, substr(c.content, 1, 4000), c.source,      c.created_at, c.last_used_at, c.use_count, c.pinned, c.lang, c.img_file, c.img_w, c.img_h, c.img_bytes, \n     (c.html IS NOT NULL OR c.rtf IS NOT NULL), c.note";
 
 const COLUMNS: &str = "c.seq, c.uuid, c.kind, c.content, c.source, c.created_at, c.last_used_at, \
-     c.use_count, c.pinned, c.lang, c.img_file, c.img_w, c.img_h, c.img_bytes,      (c.html IS NOT NULL OR c.rtf IS NOT NULL)";
+     c.use_count, c.pinned, c.lang, c.img_file, c.img_w, c.img_h, c.img_bytes,      (c.html IS NOT NULL OR c.rtf IS NOT NULL), c.note";
 
 /// 各分类的条数（用于分类标签上的数字）
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -102,7 +160,7 @@ impl Store {
     pub fn open(dir: &Path) -> Result<Self> {
         let images_dir = dir.join("images");
         let _ = std::fs::create_dir_all(&images_dir);
-        let conn = Connection::open(dir.join("tessel.db"))?;
+        let mut conn = Connection::open(dir.join("tessel.db"))?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
@@ -112,15 +170,18 @@ impl Store {
         let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version < SCHEMA_VERSION {
             // 逐级迁移，放在一个事务里：中途失败不会留下半升级的数据库
-            let mut sql = String::from("BEGIN;");
+            let tx = conn.transaction()?;
             if version < 1 {
-                sql.push_str(SCHEMA);
+                tx.execute_batch(SCHEMA)?;
             }
             if version < 2 {
-                sql.push_str(MIGRATE_V2);
+                tx.execute_batch(MIGRATE_V2)?;
             }
-            sql.push_str(&format!("PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"));
-            conn.execute_batch(&sql)?;
+            if version < 3 {
+                migrate_v3(&tx)?;
+            }
+            tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+            tx.commit()?;
         }
         Ok(Self {
             conn,
@@ -177,11 +238,17 @@ impl Store {
             }
         };
 
+        // 文件路径里的中文也能用拼音搜到
+        let py = match image {
+            Some(_) => None,
+            None => pinyin_index::index_text(&content),
+        };
+
         let tx = self.conn.transaction()?;
         let existing = tx
             .query_row(
                 "SELECT uuid, created_at, use_count, pinned, source, img_file, img_w, img_h, img_bytes,
-                        html, rtf
+                        html, rtf, note
                  FROM clips WHERE hash = ?1",
                 [&hash],
                 |r| {
@@ -199,15 +266,29 @@ impl Store {
                             html: r.get(9)?,
                             rtf: r.get(10)?,
                         },
+                        r.get::<_, Option<String>>(11)?,
                     ))
                 },
             )
             .optional()?;
 
         let is_new = existing.is_none();
+        let note = existing.as_ref().and_then(|e| e.10.clone());
         let (uuid, created_at, use_count, pinned, source, img_file, img_w, img_h, img_bytes, rich) =
             match existing {
-                Some((uuid, created, count, pinned, old_source, file, w, h, bytes, old_rich)) => {
+                Some((
+                    uuid,
+                    created,
+                    count,
+                    pinned,
+                    old_source,
+                    file,
+                    w,
+                    h,
+                    bytes,
+                    old_rich,
+                    _,
+                )) => {
                     tx.execute("DELETE FROM clips WHERE hash = ?1", [&hash])?;
                     let source = if new.from_self {
                         old_source
@@ -272,8 +353,8 @@ impl Store {
         tx.execute(
             "INSERT INTO clips (uuid, kind, content, hash, source, created_at, last_used_at,
                                 use_count, pinned, lang, img_file, img_w, img_h, img_bytes,
-                                html, rtf)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                                html, rtf, note, py)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 uuid,
                 kind.as_str(),
@@ -290,7 +371,9 @@ impl Store {
                 img_h,
                 img_bytes,
                 rich.html,
-                rich.rtf
+                rich.rtf,
+                note,
+                py
             ],
         )?;
         let seq = tx.last_insert_rowid();
@@ -323,14 +406,12 @@ impl Store {
         let hash = h.finalize().to_hex().to_string();
 
         let tx = self.conn.transaction()?;
-        let current: Option<(i64, String, String)> = tx
-            .query_row(
-                "SELECT seq, kind, content FROM clips WHERE uuid = ?1",
-                [uuid],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
+        let current: Option<(i64, String)> = tx
+            .query_row("SELECT seq, kind FROM clips WHERE uuid = ?1", [uuid], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
             .optional()?;
-        let Some((seq, old_kind, old_content)) = current else {
+        let Some((seq, old_kind)) = current else {
             return Ok(None);
         };
         if matches!(Kind::parse(&old_kind), Kind::Image | Kind::File) {
@@ -345,23 +426,34 @@ impl Store {
             )
             .optional()?
             .unwrap_or(false);
-        // 全文索引是外部内容表，UPDATE 没有触发器，手动同步
-        tx.execute(
-            "INSERT INTO clip_fts(clip_fts, rowid, content) VALUES ('delete', ?1, substr(?2, 1, 20000))",
-            params![seq, old_content],
-        )?;
+        // 全文索引由 clips_au 触发器同步
         tx.execute(
             "UPDATE clips SET kind = ?1, content = ?2, hash = ?3, lang = ?4, html = NULL, rtf = NULL,
-                              pinned = pinned OR ?5
-             WHERE seq = ?6",
-            params![kind.as_str(), text, hash, lang, merged_pin, seq],
-        )?;
-        tx.execute(
-            "INSERT INTO clip_fts(rowid, content) VALUES (?1, substr(?2, 1, 20000))",
-            params![seq, text],
+                              pinned = pinned OR ?5, py = ?6
+             WHERE seq = ?7",
+            params![
+                kind.as_str(),
+                text,
+                hash,
+                lang,
+                merged_pin,
+                pinyin_index::index_text(&text),
+                seq
+            ],
         )?;
         tx.commit()?;
         Ok(Some(kind))
+    }
+
+    /// 设置备注（可以带 `#标签`）；空白表示删除备注
+    pub fn set_note(&self, uuid: &str, note: &str) -> Result<()> {
+        let note = note.trim().replace('＃', "#");
+        let note = (!note.is_empty()).then_some(note);
+        self.conn.execute(
+            "UPDATE clips SET note = ?1 WHERE uuid = ?2",
+            params![note, uuid],
+        )?;
+        Ok(())
     }
 
     /// 读取一条记录的完整内容
@@ -432,17 +524,37 @@ impl Store {
         if q.rich {
             conds.push("(c.html IS NOT NULL OR c.rtf IS NOT NULL)".into());
         }
+        for t in &q.tags {
+            conds.push("c.note LIKE ? ESCAPE '\\'".into());
+            args.push(like(&format!("#{t}")));
+        }
         for s in &q.sources {
             conds.push("c.source LIKE ? ESCAPE '\\'".into());
             args.push(like(s));
         }
+        // 短词：正文、备注，像拼音的再加上拼音首字母
+        // （不比对全拼：两个字母在全拼里到处都有，比如 hi 在 shi、zhi 里）
         for s in &short {
-            conds.push("c.content LIKE ? ESCAPE '\\'".into());
-            args.push(like(s));
+            let pattern = like(s);
+            if pinyin_index::is_pinyin_query(s) {
+                conds.push(
+                    "(c.content LIKE ? ESCAPE '\\' OR c.note LIKE ? ESCAPE '\\' \
+                     OR substr(c.py, 1, instr(c.py, ' ') - 1) LIKE ? ESCAPE '\\')"
+                        .into(),
+                );
+                args.extend([pattern.clone(), pattern.clone(), pattern]);
+            } else {
+                conds.push("(c.content LIKE ? ESCAPE '\\' OR c.note LIKE ? ESCAPE '\\')".into());
+                args.extend([pattern.clone(), pattern]);
+            }
         }
         for s in &q.excluded {
-            conds.push("c.content NOT LIKE ? ESCAPE '\\'".into());
-            args.push(like(s));
+            conds.push(
+                "c.content NOT LIKE ? ESCAPE '\\' AND coalesce(c.note, '') NOT LIKE ? ESCAPE '\\'"
+                    .into(),
+            );
+            let pattern = like(s);
+            args.extend([pattern.clone(), pattern]);
         }
         let where_extra: String = conds.iter().map(|c| format!(" AND {c}")).collect();
 
@@ -552,6 +664,7 @@ impl Store {
             lang: r.get(9)?,
             image,
             has_rich: r.get(14)?,
+            note: r.get(15)?,
         })
     }
 }
@@ -874,6 +987,109 @@ mod tests {
         // 空内容、不存在的记录：不修改
         assert_eq!(store.update_text(&rich.uuid, "  \n").unwrap(), None);
         assert_eq!(store.update_text("nope", "x").unwrap(), None);
+    }
+
+    #[test]
+    fn notes_tags_and_pinyin() {
+        let mut store = temp_store("notes");
+        store.record(text("明天下午的会议纪要", "飞书")).unwrap();
+        store.record(text("收货地址：上海市", "微信")).unwrap();
+        store.record(text("plain english text", "记事本")).unwrap();
+        let hits = |store: &Store, q: &str| -> Vec<String> {
+            store
+                .search(q, Filter::All, 10)
+                .unwrap()
+                .into_iter()
+                .map(|c| c.content)
+                .collect()
+        };
+        // 拼音首字母、全拼；短词（2 个字母）走 LIKE，长的走全文索引
+        assert_eq!(hits(&store, "hyjy"), vec!["明天下午的会议纪要"]);
+        assert_eq!(hits(&store, "huiyi"), vec!["明天下午的会议纪要"]);
+        assert_eq!(hits(&store, "dz"), vec!["收货地址：上海市"]);
+        assert_eq!(hits(&store, "english"), vec!["plain english text"]);
+
+        // 备注：可以搜到，带标签，重新复制同样的内容后备注还在
+        let addr = store.search("地址", Filter::All, 1).unwrap()[0].clone();
+        store
+            .set_note(&addr.uuid, "家里的地址 ＃常用 #快递")
+            .unwrap();
+        let got = store.get(&addr.uuid).unwrap().unwrap();
+        assert_eq!(got.note.as_deref(), Some("家里的地址 #常用 #快递"));
+        assert_eq!(hits(&store, "家里"), vec!["收货地址：上海市"]);
+        assert_eq!(hits(&store, "家里的地址"), vec!["收货地址：上海市"]);
+        assert_eq!(hits(&store, "#快递"), vec!["收货地址：上海市"]);
+        assert_eq!(hits(&store, "tag:常用"), vec!["收货地址：上海市"]);
+        assert!(hits(&store, "#工作").is_empty());
+        store.record(text("收货地址：上海市", "Chrome")).unwrap();
+        let again = store.get(&addr.uuid).unwrap().unwrap();
+        assert_eq!(again.note, got.note);
+        assert_eq!(hits(&store, "家里的地址").len(), 1);
+
+        // 改备注：全文索引同步（旧备注搜不到，新备注搜得到）
+        store.set_note(&addr.uuid, "公司前台").unwrap();
+        assert!(hits(&store, "家里的地址").is_empty());
+        assert_eq!(hits(&store, "公司前台").len(), 1);
+        // 删除备注
+        store.set_note(&addr.uuid, "   ").unwrap();
+        assert_eq!(store.get(&addr.uuid).unwrap().unwrap().note, None);
+        assert!(hits(&store, "公司前台").is_empty());
+
+        // 改正文后拼音索引也更新
+        let meeting = store.search("hyjy", Filter::All, 1).unwrap()[0].clone();
+        store.update_text(&meeting.uuid, "季度报告").unwrap();
+        assert!(hits(&store, "hyjy").is_empty());
+        assert_eq!(hits(&store, "jdbg"), vec!["季度报告"]);
+        // 排除词也看备注
+        store.set_note(&meeting.uuid, "草稿").unwrap();
+        assert!(hits(&store, "jdbg -草稿").is_empty());
+    }
+
+    #[test]
+    fn migrates_v2_database() {
+        let tmp = TempDir::new("migrate-v2");
+        let dir = &tmp.0;
+        {
+            let conn = Connection::open(dir.join("tessel.db")).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch(MIGRATE_V2).unwrap();
+            conn.execute_batch("PRAGMA user_version = 2").unwrap();
+            conn.execute(
+                "INSERT INTO clips (uuid, kind, content, hash, created_at, last_used_at)
+                 VALUES ('u1', 'text', '项目周报草稿', 'h1', 1, 1),
+                        ('u2', 'file', 'D:\\资料\\报销单.xlsx', 'h2', 2, 2)",
+                [],
+            )
+            .unwrap();
+        }
+        let mut store = Store::open(dir).unwrap();
+        let version: i32 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        // 旧记录：正文搜索照常，拼音（包括文件名）也能搜
+        assert_eq!(store.search("项目周报", Filter::All, 10).unwrap().len(), 1);
+        assert_eq!(store.search("xmzb", Filter::All, 10).unwrap().len(), 1);
+        assert_eq!(store.search("bxd", Filter::All, 10).unwrap().len(), 1);
+        // 迁移后删除、新增都正常（触发器和索引一致）
+        store.delete("u1").unwrap();
+        assert!(
+            store
+                .search("项目周报", Filter::All, 10)
+                .unwrap()
+                .is_empty()
+        );
+        store.record(text("新的会议", "x")).unwrap();
+        assert_eq!(store.search("hy", Filter::All, 10).unwrap().len(), 1);
+        // 全文索引内部一致（损坏时这条命令会报错）
+        store
+            .conn
+            .execute(
+                "INSERT INTO clip_fts(clip_fts) VALUES ('integrity-check')",
+                [],
+            )
+            .unwrap();
     }
 
     #[test]

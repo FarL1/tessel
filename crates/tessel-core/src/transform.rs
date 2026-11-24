@@ -614,6 +614,7 @@ mod tests {
             lang,
             image: None,
             has_rich: false,
+            note: None,
         }
     }
 

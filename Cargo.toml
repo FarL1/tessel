@@ -28,6 +28,8 @@ serde = { version = "1", features = ["derive"] }
 toml = "1.2"
 toml_edit = "0.25"
 serde_json = "1"
+# 拼音搜索：只要不带声调的拼音（plain），数据表最小
+pinyin = { version = "0.11", default-features = false, features = ["plain"] }
 uuid = { version = "1.29", features = ["v7"] }
 image = { version = "0.25", default-features = false, features = ["png", "bmp"] }
 # GPUI 处于 1.0 之前，API 变动频繁：一律精确锁定版本，升级时单独提 PR 并做回归测试。

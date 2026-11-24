@@ -6,8 +6,10 @@
 //! | `type:link` / `类型:链接` | 只看某种类型：text code link color image file（或中文名） |
 //! | `is:pinned` / `is:收藏` | 只看收藏 |
 //! | `is:rich` / `is:格式` | 只看带格式的文本 |
+//! | `#工作` / `tag:工作` / `标签:工作` | 备注里带 `#工作` 标签的 |
 //! | `-词` | 排除包含这个词的记录 |
 //!
+//! `#` 后面是颜色值（`#4F6BED`）时仍按普通关键词搜索。
 //! 不认识的前缀（比如 `http://` 里的冒号、`12:30`）按普通关键词处理。
 
 use crate::model::Kind;
@@ -20,6 +22,8 @@ pub struct Query {
     pub excluded: Vec<String>,
     /// 来源程序名包含其中每一个
     pub sources: Vec<String>,
+    /// 备注里的标签（不含 `#`）
+    pub tags: Vec<String>,
     pub kind: Option<Kind>,
     pub pinned: bool,
     pub rich: bool,
@@ -33,6 +37,13 @@ impl Query {
                 && !word.is_empty()
             {
                 q.excluded.push(word.to_string());
+                continue;
+            }
+            if let Some(tag) = token.strip_prefix(['#', '＃'])
+                && !tag.is_empty()
+                && !is_hex_color(tag)
+            {
+                q.tags.push(tag.to_string());
                 continue;
             }
             if let Some((key, value)) = token.split_once([':', '：'])
@@ -51,6 +62,11 @@ impl Query {
         match key.to_lowercase().as_str() {
             "app" | "from" | "来源" => {
                 self.sources.push(value.to_string());
+                true
+            }
+            "tag" | "标签" => {
+                self.tags
+                    .push(value.trim_start_matches(['#', '＃']).to_string());
                 true
             }
             "type" | "kind" | "类型" => match parse_kind(value) {
@@ -79,6 +95,19 @@ impl Query {
     pub fn highlight(&self) -> String {
         self.terms.join(" ")
     }
+}
+
+/// `#` 后面是不是颜色值（3 / 4 / 6 / 8 位十六进制）
+fn is_hex_color(s: &str) -> bool {
+    matches!(s.len(), 3 | 4 | 6 | 8) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// 备注里的标签：以 `#` 开头的词（不含 `#`）。颜色值不算标签。
+pub fn note_tags(note: &str) -> Vec<&str> {
+    note.split_whitespace()
+        .filter_map(|w| w.strip_prefix(['#', '＃']))
+        .filter(|t| !t.is_empty() && !is_hex_color(t))
+        .collect()
 }
 
 fn parse_kind(value: &str) -> Option<Kind> {
@@ -121,6 +150,14 @@ mod tests {
         assert_eq!(q.kind, Some(Kind::Code));
         assert!(q.rich);
         assert!(q.terms.is_empty());
+    }
+
+    #[test]
+    fn tags() {
+        let q = Query::parse("#工作 tag:报销 标签：#旅行 #4F6BED #fff");
+        assert_eq!(q.tags, vec!["工作", "报销", "旅行"]);
+        assert_eq!(q.terms, vec!["#4F6BED", "#fff"]);
+        assert_eq!(note_tags("出差用 #工作 #旅行 #abc"), vec!["工作", "旅行"]);
     }
 
     #[test]

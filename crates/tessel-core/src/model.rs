@@ -146,6 +146,8 @@ pub struct Clip {
     pub image: Option<ImageInfo>,
     /// 是否保存了富格式（HTML / RTF）；内容本身用 `Store::rich_formats()` 读取
     pub has_rich: bool,
+    /// 用户写的备注，可以带 `#标签`
+    pub note: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
