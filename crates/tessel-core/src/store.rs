@@ -476,15 +476,59 @@ impl Store {
 mod tests {
     use super::*;
 
-    fn temp_store(name: &str) -> Store {
-        let dir = std::env::temp_dir().join(format!(
-            "tessel-test-{name}-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        Store::open(&dir).unwrap()
+    /// 测试用的临时目录，离开作用域时删除
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "tessel-test-{name}-{}-{}",
+                std::process::id(),
+                now_ms()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// 临时目录里的存储。先关闭数据库再删目录（Windows 上打开的文件删不掉）
+    struct TempStore {
+        store: Option<Store>,
+        _dir: TempDir,
+    }
+
+    impl std::ops::Deref for TempStore {
+        type Target = Store;
+        fn deref(&self) -> &Store {
+            self.store.as_ref().unwrap()
+        }
+    }
+
+    impl std::ops::DerefMut for TempStore {
+        fn deref_mut(&mut self) -> &mut Store {
+            self.store.as_mut().unwrap()
+        }
+    }
+
+    impl Drop for TempStore {
+        fn drop(&mut self) {
+            self.store.take();
+        }
+    }
+
+    fn temp_store(name: &str) -> TempStore {
+        let dir = TempDir::new(name);
+        TempStore {
+            store: Some(Store::open(&dir.0).unwrap()),
+            _dir: dir,
+        }
     }
 
     fn text(s: &str, source: &str) -> NewClip {
@@ -665,12 +709,8 @@ mod tests {
 
     #[test]
     fn migrates_v1_database() {
-        let dir = std::env::temp_dir().join(format!(
-            "tessel-test-migrate-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = TempDir::new("migrate");
+        let dir = &tmp.0;
         {
             // 造一个 v1 数据库（只有 v1 的表结构）并写入一条记录
             let conn = Connection::open(dir.join("tessel.db")).unwrap();
@@ -683,7 +723,7 @@ mod tests {
             )
             .unwrap();
         }
-        let store = Store::open(&dir).unwrap();
+        let store = Store::open(dir).unwrap();
         let version: i32 = store
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
