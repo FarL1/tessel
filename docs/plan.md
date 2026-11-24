@@ -297,7 +297,8 @@ UI 技术待定：Android 用 Jetpack Compose，iOS 用 SwiftUI，这是最自�
 - [x] 粘贴队列（方案 B）：弹窗里 `Ctrl+Q` 排队，全局热键（默认 `Alt+Shift+V`）每按一次粘贴下一条；等修饰键松开后再发 Ctrl+V，并先发一个占位键避免 Alt 激活菜单栏 / Shift 切换输入法
 - [x] 编辑记录（`Ctrl+E`）：预览区变成编辑框，原地更新（`Store::update_text`，同步全文索引，丢弃对不上的富格式，撞重复时合并）
 - [x] 复制提示：独立的透明浮层窗口（不激活、不进任务栏），屏幕底部显示 1.5 秒；`copy_toast` 可关闭
-- 片段和模板（带变量，比如 `{date}`、`{clipboard}`）
+- [x] 片段和模板：`snippet` 标记（数据库 v4），`Ctrl+N` 新建；变量 `{date}` `{time}` `{datetime}` `{weekday}` `{clipboard}` `{cursor}`（`tessel-core::template`，中英文变量名都认，不认识的花括号原样保留）；`{cursor}` 用粘贴后发送 ← 实现；只对片段展开
+- [x] 界面多语言：`tessel-core::i18n`（`tr` / `trf!`，两种写法放在一处），`language = system|zh|en`，切换即时生效
 - [x] 拼音搜索：`pinyin` crate（只启用 plain），存储时生成"首字母 全拼"索引并放进全文索引；1–2 个字母只比对首字母，避免全拼里到处命中；界面高亮时把拼音匹配映射回汉字
 - [x] 备注与标签（`F2`）：`note` 列，`#标签` 写在备注里，`#标签` / `tag:` 过滤；全文索引改由 INSERT / UPDATE / DELETE 三个触发器维护（数据库 v3）
 - 数据导入导出；自动更新（候选方案：Velopack）

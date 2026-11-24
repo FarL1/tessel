@@ -28,7 +28,10 @@ const PRUNE_EVERY: u32 = 50;
 /// 默认最多保留的未收藏记录数
 pub const DEFAULT_KEEP: usize = 5_000;
 
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
+
+/// v3 → v4：片段
+const MIGRATE_V4: &str = "ALTER TABLE clips ADD COLUMN snippet INTEGER NOT NULL DEFAULT 0;";
 
 /// v1 → v2：文本的富格式
 const MIGRATE_V2: &str =
@@ -125,16 +128,17 @@ fn migrate_v3(tx: &rusqlite::Transaction) -> Result<()> {
 /// 列表查询只取内容的前 N 个字符（标题、文件数、颜色都够用），完整内容用 `get()` 按需读取
 pub const LIST_CONTENT_CHARS: usize = 4000;
 
-const LIST_COLUMNS: &str = "c.seq, c.uuid, c.kind, substr(c.content, 1, 4000), c.source,      c.created_at, c.last_used_at, c.use_count, c.pinned, c.lang, c.img_file, c.img_w, c.img_h, c.img_bytes, \n     (c.html IS NOT NULL OR c.rtf IS NOT NULL), c.note";
+const LIST_COLUMNS: &str = "c.seq, c.uuid, c.kind, substr(c.content, 1, 4000), c.source,      c.created_at, c.last_used_at, c.use_count, c.pinned, c.lang, c.img_file, c.img_w, c.img_h, c.img_bytes, \n     (c.html IS NOT NULL OR c.rtf IS NOT NULL), c.note, c.snippet";
 
 const COLUMNS: &str = "c.seq, c.uuid, c.kind, c.content, c.source, c.created_at, c.last_used_at, \
-     c.use_count, c.pinned, c.lang, c.img_file, c.img_w, c.img_h, c.img_bytes,      (c.html IS NOT NULL OR c.rtf IS NOT NULL), c.note";
+     c.use_count, c.pinned, c.lang, c.img_file, c.img_w, c.img_h, c.img_bytes,      (c.html IS NOT NULL OR c.rtf IS NOT NULL), c.note, c.snippet";
 
 /// 各分类的条数（用于分类标签上的数字）
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Counts {
     pub total: usize,
     pub pinned: usize,
+    pub snippets: usize,
     pub by_kind: [usize; 6],
 }
 
@@ -143,6 +147,7 @@ impl Counts {
         match filter {
             Filter::All => self.total,
             Filter::Pinned => self.pinned,
+            Filter::Snippets => self.snippets,
             Filter::Kind(k) => self.by_kind[Kind::ALL.iter().position(|x| *x == k).unwrap_or(0)],
         }
     }
@@ -179,6 +184,9 @@ impl Store {
             }
             if version < 3 {
                 migrate_v3(&tx)?;
+            }
+            if version < 4 {
+                tx.execute_batch(MIGRATE_V4)?;
             }
             tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
             tx.commit()?;
@@ -248,7 +256,7 @@ impl Store {
         let existing = tx
             .query_row(
                 "SELECT uuid, created_at, use_count, pinned, source, img_file, img_w, img_h, img_bytes,
-                        html, rtf, note
+                        html, rtf, note, snippet
                  FROM clips WHERE hash = ?1",
                 [&hash],
                 |r| {
@@ -267,13 +275,16 @@ impl Store {
                             rtf: r.get(10)?,
                         },
                         r.get::<_, Option<String>>(11)?,
+                        r.get::<_, bool>(12)?,
                     ))
                 },
             )
             .optional()?;
 
         let is_new = existing.is_none();
+        // 备注、片段标记跟着内容走：再次复制同样的内容不会丢
         let note = existing.as_ref().and_then(|e| e.10.clone());
+        let snippet = existing.as_ref().is_some_and(|e| e.11);
         let (uuid, created_at, use_count, pinned, source, img_file, img_w, img_h, img_bytes, rich) =
             match existing {
                 Some((
@@ -287,6 +298,7 @@ impl Store {
                     h,
                     bytes,
                     old_rich,
+                    _,
                     _,
                 )) => {
                     tx.execute("DELETE FROM clips WHERE hash = ?1", [&hash])?;
@@ -353,8 +365,9 @@ impl Store {
         tx.execute(
             "INSERT INTO clips (uuid, kind, content, hash, source, created_at, last_used_at,
                                 use_count, pinned, lang, img_file, img_w, img_h, img_bytes,
-                                html, rtf, note, py)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                                html, rtf, note, py, snippet)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
+                     ?19)",
             params![
                 uuid,
                 kind.as_str(),
@@ -373,7 +386,8 @@ impl Store {
                 rich.html,
                 rich.rtf,
                 note,
-                py
+                py,
+                snippet
             ],
         )?;
         let seq = tx.last_insert_rowid();
@@ -445,6 +459,34 @@ impl Store {
         Ok(Some(kind))
     }
 
+    /// 标记 / 取消片段
+    pub fn set_snippet(&self, uuid: &str, snippet: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE clips SET snippet = ?1 WHERE uuid = ?2",
+            params![snippet, uuid],
+        )?;
+        Ok(())
+    }
+
+    /// 新建一条片段，返回它的 uuid；内容为空时返回 `None`。
+    /// 和已有记录内容相同时，把那条标记为片段。
+    pub fn create_snippet(&mut self, text: &str) -> Result<Option<String>> {
+        let Some(seq) = self.record(NewClip {
+            payload: Payload::Text(text.to_string()),
+            source: None,
+            from_self: true,
+            rich: RichFormats::default(),
+        })?
+        else {
+            return Ok(None);
+        };
+        let uuid: String =
+            self.conn
+                .query_row("SELECT uuid FROM clips WHERE seq = ?1", [seq], |r| r.get(0))?;
+        self.set_snippet(&uuid, true)?;
+        Ok(Some(uuid))
+    }
+
     /// 设置备注（可以带 `#标签`）；空白表示删除备注
     pub fn set_note(&self, uuid: &str, note: &str) -> Result<()> {
         let note = note.trim().replace('＃', "#");
@@ -513,6 +555,10 @@ impl Store {
                 args.push(k.as_str().into());
             }
             Filter::Pinned => conds.push("c.pinned = 1".into()),
+            Filter::Snippets => conds.push("c.snippet = 1".into()),
+        }
+        if q.snippet {
+            conds.push("c.snippet = 1".into());
         }
         if let Some(k) = q.kind {
             conds.push("c.kind = ?".into());
@@ -593,11 +639,11 @@ impl Store {
             counts.by_kind[ix] += n as usize;
             counts.total += n as usize;
         }
-        counts.pinned =
-            self.conn
-                .query_row("SELECT count(*) FROM clips WHERE pinned = 1", [], |r| {
-                    r.get::<_, i64>(0)
-                })? as usize;
+        (counts.pinned, counts.snippets) = self.conn.query_row(
+            "SELECT coalesce(sum(pinned), 0), coalesce(sum(snippet), 0) FROM clips",
+            [],
+            |r| Ok((r.get::<_, i64>(0)? as usize, r.get::<_, i64>(1)? as usize)),
+        )?;
         Ok(counts)
     }
 
@@ -624,11 +670,11 @@ impl Store {
         Ok(())
     }
 
-    /// 只保留最近的 `keep` 条未收藏记录（收藏的永远保留）
+    /// 只保留最近的 `keep` 条普通记录（收藏的、片段永远保留）
     pub fn prune(&mut self, keep: usize) -> Result<usize> {
         let mut stmt = self.conn.prepare(
-            "DELETE FROM clips WHERE pinned = 0 AND seq NOT IN
-               (SELECT seq FROM clips WHERE pinned = 0 ORDER BY seq DESC LIMIT ?1)
+            "DELETE FROM clips WHERE pinned = 0 AND snippet = 0 AND seq NOT IN
+               (SELECT seq FROM clips WHERE pinned = 0 AND snippet = 0 ORDER BY seq DESC LIMIT ?1)
              RETURNING img_file",
         )?;
         let files: Vec<Option<String>> = stmt
@@ -665,6 +711,7 @@ impl Store {
             image,
             has_rich: r.get(14)?,
             note: r.get(15)?,
+            snippet: r.get(16)?,
         })
     }
 }
@@ -1090,6 +1137,40 @@ mod tests {
                 [],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn snippets() {
+        let mut store = temp_store("snippets");
+        for i in 0..5 {
+            store.record(text(&format!("普通记录 {i}"), "x")).unwrap();
+        }
+        let uuid = store
+            .create_snippet("您好，今天是 {date}。{cursor}")
+            .unwrap()
+            .unwrap();
+        let s = store.get(&uuid).unwrap().unwrap();
+        assert!(s.snippet);
+        assert_eq!(s.source, None);
+        assert_eq!(store.counts().unwrap().snippets, 1);
+        assert_eq!(store.search("", Filter::Snippets, 10).unwrap().len(), 1);
+        assert_eq!(store.search("is:片段", Filter::All, 10).unwrap().len(), 1);
+
+        // 再次复制同样的内容：还是片段
+        store
+            .record(text("您好，今天是 {date}。{cursor}", "记事本"))
+            .unwrap();
+        assert!(store.get(&uuid).unwrap().unwrap().snippet);
+        // 清理时片段保留（和收藏一样）
+        assert_eq!(store.prune(2).unwrap(), 3);
+        assert_eq!(store.clear_unpinned().unwrap(), 2);
+        assert!(store.get(&uuid).unwrap().is_some());
+        // 取消片段
+        store.set_snippet(&uuid, false).unwrap();
+        assert!(!store.get(&uuid).unwrap().unwrap().snippet);
+        assert_eq!(store.counts().unwrap().snippets, 0);
+        // 空内容不创建
+        assert_eq!(store.create_snippet("  ").unwrap(), None);
     }
 
     #[test]

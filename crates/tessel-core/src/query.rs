@@ -6,6 +6,7 @@
 //! | `type:link` / `类型:链接` | 只看某种类型：text code link color image file（或中文名） |
 //! | `is:pinned` / `is:收藏` | 只看收藏 |
 //! | `is:rich` / `is:格式` | 只看带格式的文本 |
+//! | `is:snippet` / `is:片段` | 只看片段 |
 //! | `#工作` / `tag:工作` / `标签:工作` | 备注里带 `#工作` 标签的 |
 //! | `-词` | 排除包含这个词的记录 |
 //!
@@ -27,6 +28,7 @@ pub struct Query {
     pub kind: Option<Kind>,
     pub pinned: bool,
     pub rich: bool,
+    pub snippet: bool,
 }
 
 impl Query {
@@ -83,6 +85,10 @@ impl Query {
                 }
                 "rich" | "formatted" | "格式" | "富文本" => {
                     self.rich = true;
+                    true
+                }
+                "snippet" | "snippets" | "template" | "片段" | "模板" => {
+                    self.snippet = true;
                     true
                 }
                 _ => false,

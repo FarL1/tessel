@@ -60,6 +60,8 @@ Tessel 是一个**剪贴板管理器**：它在后台记下你每一次复制（
 - **键盘优先**：唤起、搜索、选择、粘贴都不用碰鼠标，`Ctrl+1–9` 快速粘贴，`Tab` 切换分类，`Ctrl+K` 打开动作菜单。
 - **找得到**：全文搜索，中文两个字也能搜；支持拼音首字母（`hyjy` 找到"会议纪要"）；可以按来源程序、类型过滤；给常用的内容加备注和 `#标签`。
 - **粘贴队列**：先把几段内容排好队，再在目标程序里每按一次 `Alt+Shift+V` 粘贴一条，填表、搬资料不用来回切窗口。
+- **片段和模板**：常用的文字存成片段，粘贴时自动填入日期、时间、上一次复制的内容，还能指定粘贴后光标停在哪。
+- **中文 / English**：界面可以在设置里切换成英文，默认跟随系统。
 - **复制有回应**：每次复制成功，屏幕底部会轻轻提示一下复制了什么，不打断输入。
 - **认得你复制的是什么**：自动识别链接、颜色、代码（并猜出语言）、图片、文件，按类型给出合适的预览。
 - **格式不丢**：从网页、Word、Excel 复制的内容，粘贴回去仍带格式；`Shift+Enter` 粘贴为纯文本。
@@ -102,6 +104,7 @@ Tessel 是一个**剪贴板管理器**：它在后台记下你每一次复制（
 | `Ctrl+O` | 打开：链接用浏览器、文件在资源管理器中定位、图片用系统查看器 |
 | `Ctrl+E` | 编辑这一条的文字：`Ctrl+S` 保存，`Ctrl+Enter` 保存并粘贴，`Esc` 放弃 |
 | `Ctrl+Q` | 加入 / 移出粘贴队列（见下） |
+| `Ctrl+N` | 新建片段（见下） |
 | `F2` | 写备注：给这一条起个名字，或者用 `#标签` 分类（列表里显示备注，搜索时也会搜备注） |
 | `Ctrl+K` | 动作菜单：只复制不粘贴、格式化 JSON、去掉链接追踪参数、转换颜色格式、合并为一行……（只列出对这一条有用的） |
 | `Ctrl+,` | 打开设置 |
@@ -113,7 +116,7 @@ Tessel 是一个**剪贴板管理器**：它在后台记下你每一次复制（
 |---|---|
 | `app:微信`（或 `来源:微信`） | 只看某个程序复制的 |
 | `type:link`（或 `类型:链接`） | 只看某种类型：text / link / code / image / file / color |
-| `is:pinned`（或 `is:收藏`）、`is:rich` | 只看收藏的 / 带格式的 |
+| `is:pinned`（或 `is:收藏`）、`is:rich`、`is:snippet`（或 `is:片段`） | 只看收藏的 / 带格式的 / 片段 |
 | `#常用`（或 `tag:常用`） | 只看备注里带 `#常用` 标签的 |
 | `-草稿` | 排除包含"草稿"的 |
 
@@ -122,6 +125,20 @@ Tessel 是一个**剪贴板管理器**：它在后台记下你每一次复制（
 **粘贴队列**：要把几段内容依次粘贴到别处（比如填表）时，先在弹窗里对它们逐条按 `Ctrl+Q`
 （列表右侧会显示排队序号），然后回到目标程序，每按一次 **`Alt+Shift+V`** 就粘贴队列里的下一条，
 屏幕底部会提示还剩几条。
+
+**片段和模板**：常用的文字（回复模板、签名、地址、命令）可以存成片段：按 `Ctrl+N` 新建，或者在 `Ctrl+K` 菜单里把一条记录"存为片段"。
+片段永远不会被自动清理，在"片段"分类里找得到，粘贴时会替换里面的变量：
+
+| 变量 | 粘贴出来 |
+|---|---|
+| `{date}` / `{日期}` | 2026-11-24 |
+| `{time}` / `{时间}` | 14:05 |
+| `{datetime}` | 2026-11-24 14:05 |
+| `{weekday}` / `{星期}` | 星期二（英文界面是 Tuesday） |
+| `{clipboard}` / `{剪贴板}` | 上一次复制的内容 |
+| `{cursor}` / `{光标}` | 粘贴后光标停在这里 |
+
+例如片段 `您好 {cursor}，附件是 {date} 的周报。` 粘贴后，光标正好停在"您好"后面。只有片段才会替换变量，普通历史里的 `{date}` 原样粘贴。
 
 **复制提示**：每次复制成功，屏幕底部会出现一个小提示，显示复制了什么，1.5 秒后自动消失；
 它不会抢走焦点，不影响正在输入的内容。不需要的话可以在设置里关掉。
@@ -141,6 +158,7 @@ Tessel 是一个**剪贴板管理器**：它在后台记下你每一次复制（
 | `max_items` | `5000` | 最多保留的历史条数（收藏不计入） |
 | `auto_paste` | `true` | 选中后直接粘贴；`false` 则只复制到剪贴板 |
 | `copy_toast` | `true` | 复制成功时在屏幕底部显示提示 |
+| `language` | `"system"` | 界面语言：`"system"`（跟随 Windows 显示语言）/ `"zh"` / `"en"` |
 | `theme` | `"system"` | `"system"`（跟随系统）/ `"light"` / `"dark"` |
 | `ignored_apps` | 常见密码管理器 | 不记录这些程序复制的内容（按 exe 文件名，不区分大小写） |
 
@@ -185,9 +203,11 @@ with a few keystrokes:
 - Keeps rich-text formatting (HTML / RTF), or paste as plain text with `Shift+Enter`
 - Paste queue: queue several clips, then paste them one by one with `Alt+Shift+V`
 - Action menu (`Ctrl+K`): format JSON, strip tracking parameters from URLs, convert colors, edit before pasting
+- Snippets with variables (`{date}`, `{time}`, `{clipboard}`, `{cursor}`) and notes / `#tags`
+- English and Chinese UI (follows the Windows display language by default)
 - Private by design: data stays on your machine; respects the "exclude from clipboard history" flag used by password managers
 
-An alternative to the built-in Windows clipboard history (`Win+V`), Ditto or CopyQ. The interface is currently in Chinese.
+An alternative to the built-in Windows clipboard history (`Win+V`), Ditto or CopyQ.
 
 ## 开发
 

@@ -616,6 +616,7 @@ mod tests {
             image: None,
             has_rich: false,
             note: None,
+            snippet: false,
         }
     }
 

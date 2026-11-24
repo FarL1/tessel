@@ -76,10 +76,12 @@ pub enum Filter {
     All,
     Kind(Kind),
     Pinned,
+    /// 片段（可以带模板变量）
+    Snippets,
 }
 
 impl Filter {
-    pub const ALL: [Filter; 8] = [
+    pub const ALL: [Filter; 9] = [
         Filter::All,
         Filter::Kind(Kind::Text),
         Filter::Kind(Kind::Link),
@@ -88,6 +90,7 @@ impl Filter {
         Filter::Kind(Kind::File),
         Filter::Kind(Kind::Color),
         Filter::Pinned,
+        Filter::Snippets,
     ];
 
     pub fn label(self) -> &'static str {
@@ -95,6 +98,7 @@ impl Filter {
             Filter::All => tr("全部", "All"),
             Filter::Kind(k) => k.category_label(),
             Filter::Pinned => tr("收藏", "Pinned"),
+            Filter::Snippets => tr("片段", "Snippets"),
         }
     }
 }
@@ -163,6 +167,8 @@ pub struct Clip {
     pub has_rich: bool,
     /// 用户写的备注，可以带 `#标签`
     pub note: Option<String>,
+    /// 片段：粘贴时展开模板变量，永远不会被自动清理
+    pub snippet: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -9,6 +9,7 @@ pub mod model;
 pub mod pinyin_index;
 pub mod query;
 pub mod store;
+pub mod template;
 pub mod time;
 pub mod transform;
 

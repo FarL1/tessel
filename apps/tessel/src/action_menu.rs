@@ -59,6 +59,8 @@ gpui_kit::assets::icon_assets!(
         ListX,
         SquarePen,
         StickyNote,
+        Scissors,
+        SquarePlus,
     ]
 );
 
@@ -92,6 +94,8 @@ pub enum MenuAction {
     Delete,
     Edit,
     EditNote,
+    ToggleSnippet,
+    NewSnippet,
     ToggleQueue,
     ClearQueue,
 }
@@ -321,6 +325,39 @@ impl ActionMenu {
             })
             .keys(&["F2"])
             .keywords("note tag rename 备注 标签 重命名"),
+        );
+        if !matches!(clip.kind, Kind::Image | Kind::File) {
+            entries.push(
+                Entry::new(
+                    A::ToggleSnippet,
+                    if clip.snippet {
+                        tr("取消片段", "Unmark as snippet")
+                    } else {
+                        tr("存为片段", "Save as snippet")
+                    },
+                    IconName::Scissors,
+                    Group::Manage,
+                )
+                .detail(if clip.snippet {
+                    tr("变回普通记录", "Turn it back into a normal item")
+                } else {
+                    tr(
+                        "可以用 {date} {cursor} 等变量，永远保留",
+                        "Supports {date}, {cursor}… and is kept forever",
+                    )
+                })
+                .keywords("snippet template 片段 模板 变量"),
+            );
+        }
+        entries.push(
+            Entry::new(
+                A::NewSnippet,
+                tr("新建片段", "New snippet"),
+                IconName::SquarePlus,
+                Group::Manage,
+            )
+            .keys(&["Ctrl", "N"])
+            .keywords("new snippet template 新建 片段 模板"),
         );
         entries.push(
             match queued {

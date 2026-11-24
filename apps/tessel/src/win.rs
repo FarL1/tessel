@@ -218,6 +218,32 @@ fn key(vk: VIRTUAL_KEY, up: bool) -> INPUT {
     }
 }
 
+/// 粘贴片段后把光标移回 `{cursor}` 的位置：按 `n` 次 ←
+pub fn send_left(n: usize) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::VK_LEFT;
+    let inputs: Vec<INPUT> = (0..n.min(2000))
+        .flat_map(|_| [key(VK_LEFT, false), key(VK_LEFT, true)])
+        .collect();
+    if !inputs.is_empty() {
+        unsafe {
+            SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        }
+    }
+}
+
+/// 本地时间（片段里的 `{date}` `{time}`）
+pub fn local_time() -> tessel_core::template::LocalTime {
+    let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    tessel_core::template::LocalTime {
+        year: t.wYear,
+        month: t.wMonth as u8,
+        day: t.wDay as u8,
+        hour: t.wHour as u8,
+        minute: t.wMinute as u8,
+        weekday: t.wDayOfWeek as u8,
+    }
+}
+
 /// 热键触发时按住的修饰键还没松开（这时发 Ctrl+V 会变成 Ctrl+Alt+Shift+V 之类）
 pub fn modifiers_held() -> bool {
     [VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN]

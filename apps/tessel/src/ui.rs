@@ -14,6 +14,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use tessel_clipboard::WriteContent;
 use tessel_core::i18n::tr;
+use tessel_core::template::{self, Expanded};
 use tessel_core::time::{now_ms, relative as relative_time};
 use tessel_core::trf;
 use tessel_core::{Clip, Config, Counts, Filter, Kind, Query, Store, ThemePref};
@@ -41,6 +42,7 @@ actions!(
         ToggleQueue,
         StartEdit,
         EditNote,
+        NewSnippet,
         SaveNote,
         CancelNote,
         SaveEdit,
@@ -70,6 +72,8 @@ fn note_placeholder() -> &'static str {
 }
 /// 编辑记录时预览区变成编辑框，键位上下文是 `ClipPopup > ClipEditor`
 const EDITOR_CONTEXT: &str = "ClipEditor";
+/// 编辑器里正在写的是一条新片段（还没有存进数据库）
+const NEW_SNIPPET: &str = "<new-snippet>";
 /// 备注输入框（F2）
 const NOTE_CONTEXT: &str = "NoteEditor";
 /// 一次最多加载的条数。列表是虚拟列表（只渲染可见的行），条数主要影响内存：
@@ -102,6 +106,7 @@ pub fn bind_keys(cx: &mut App) {
             KeyBinding::new("ctrl-q", ToggleQueue, c),
             KeyBinding::new("ctrl-e", StartEdit, c),
             KeyBinding::new("f2", EditNote, c),
+            KeyBinding::new("ctrl-n", NewSnippet, c),
         ]);
     }
     // 编辑框里：Enter 是换行，Esc 只退出编辑（不关闭弹窗）
@@ -560,6 +565,10 @@ impl Popup {
     }
 
     fn paste_clip(&mut self, clip: &Clip, plain: bool, cx: &mut Context<Self>) {
+        if let Some(e) = self.snippet_expansion(clip) {
+            self.paste_text_at(&e.text, "片段", e.cursor_back, cx);
+            return;
+        }
         let t0 = Instant::now();
         let written = self.write_to_clipboard(clip, plain);
         let what = format!(
@@ -567,15 +576,55 @@ impl Popup {
             clip.kind.label(),
             if plain { "（纯文本）" } else { "" }
         );
-        self.deliver(written, &what, t0, cx);
+        self.deliver(written, &what, t0, 0, cx);
     }
 
-    /// 粘贴一段生成的文本（转换结果、文件路径）。Windows 剪贴板文本惯用 CRLF。
+    /// 粘贴一段生成的文本（转换结果、文件路径）
     fn paste_text(&mut self, text: &str, what: &str, cx: &mut Context<Self>) {
+        self.paste_text_at(text, what, 0, cx);
+    }
+
+    /// `cursor_back`：粘贴后按几次 ←（片段里的 `{cursor}`）
+    fn paste_text_at(
+        &mut self,
+        text: &str,
+        what: &str,
+        cursor_back: usize,
+        cx: &mut Context<Self>,
+    ) {
         let t0 = Instant::now();
+        let written = self.write_text(text);
+        self.deliver(written, what, t0, cursor_back, cx);
+    }
+
+    /// 写入纯文本。Windows 剪贴板文本惯用 CRLF。
+    fn write_text(&self, text: &str) -> Result<(), String> {
         let text = text.replace("\r\n", "\n").replace('\n', "\r\n");
-        let written = tessel_clipboard::write(Some(self.hwnd), WriteContent::Text(&text));
-        self.deliver(written, what, t0, cx);
+        tessel_clipboard::write(Some(self.hwnd), WriteContent::Text(&text))
+    }
+
+    /// 片段带变量时，展开后的文本；其他记录返回 `None`（按原样粘贴，保留格式）
+    fn snippet_expansion(&self, clip: &Clip) -> Option<Expanded> {
+        if !clip.snippet || !template::has_variables(&clip.content) {
+            return None;
+        }
+        // {clipboard}：上一次复制的文本（不算这个片段自己）
+        let clipboard = self
+            .store
+            .search("", Filter::All, 5)
+            .ok()?
+            .into_iter()
+            .find(|c| c.uuid != clip.uuid && !matches!(c.kind, Kind::Image | Kind::File))
+            .and_then(|c| self.store.get(&c.uuid).ok().flatten())
+            .map(|c| c.content)
+            .unwrap_or_default();
+        Some(template::expand(
+            &clip.content,
+            &template::Context {
+                now: win::local_time(),
+                clipboard: &clipboard,
+            },
+        ))
     }
 
     /// 只复制到剪贴板，关闭弹窗，由用户自己粘贴
@@ -583,7 +632,11 @@ impl Popup {
         let Some(clip) = self.full_clip(pos) else {
             return;
         };
-        match self.write_to_clipboard(&clip, false) {
+        let written = match self.snippet_expansion(&clip) {
+            Some(e) => self.write_text(&e.text),
+            None => self.write_to_clipboard(&clip, false),
+        };
+        match written {
             Ok(()) => self.hide(true, cx),
             Err(err) => {
                 self.status = Some(
@@ -604,6 +657,7 @@ impl Popup {
         written: Result<(), String>,
         what: &str,
         t0: Instant,
+        cursor_back: usize,
         cx: &mut Context<Self>,
     ) {
         if let Err(err) = written {
@@ -631,6 +685,9 @@ impl Popup {
         self.visible = false;
         win::hide(self.hwnd);
         let report = win::restore_and_paste(target);
+        if report.focused && cursor_back > 0 {
+            win::send_left(cursor_back);
+        }
         log_line(format!(
             "[paste] {} {} → 「{}」· 切换焦点 {:.1}ms · 总耗时 {:.1}ms",
             if report.focused {
@@ -761,9 +818,17 @@ impl Popup {
             let Ok(Some(clip)) = self.store.get(&uuid) else {
                 continue;
             };
-            let notice = match self.write_to_clipboard(&clip, false) {
+            let expansion = self.snippet_expansion(&clip);
+            let written = match &expansion {
+                Some(e) => self.write_text(&e.text),
+                None => self.write_to_clipboard(&clip, false),
+            };
+            let notice = match written {
                 Ok(()) => {
                     win::send_ctrl_v();
+                    if let Some(e) = &expansion {
+                        win::send_left(e.cursor_back);
+                    }
                     log_line(format!(
                         "[queue] 粘贴{} → 「{}」· 还剩 {} 条",
                         clip.kind.label(),
@@ -847,6 +912,10 @@ impl Popup {
         let Some(uuid) = self.editing.clone() else {
             return;
         };
+        if uuid == NEW_SNIPPET {
+            self.save_new_snippet(then_paste, window, cx);
+            return;
+        }
         let Ok(Some(original)) = self.store.get(&uuid) else {
             self.status = Some(tr("这条记录已经不存在了", "This item no longer exists").into());
             self.cancel_edit(window, cx);
@@ -892,6 +961,77 @@ impl Popup {
         self.search.update(cx, |state, cx| state.focus(window, cx));
         if then_paste && let Ok(Some(clip)) = self.store.get(&uuid) {
             self.paste_clip(&clip, false, cx);
+        }
+    }
+
+    // ── 片段 ──
+
+    /// 新建片段：预览区变成空白的编辑框，保存后出现在"片段"分类里
+    fn start_new_snippet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu = None;
+        self.editing = Some(NEW_SNIPPET.to_string());
+        self.editor.update(cx, |state, cx| {
+            state.set_value("", window, cx);
+            state.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn save_new_snippet(&mut self, then_paste: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.editor.read(cx).value().to_string();
+        if text.trim().is_empty() {
+            self.status = Some(tr("片段内容不能为空", "The snippet can't be empty").into());
+            cx.notify();
+            return;
+        }
+        let uuid = match self.store.create_snippet(&text.replace('\n', "\r\n")) {
+            Ok(Some(uuid)) => uuid,
+            Ok(None) => return,
+            Err(err) => {
+                self.status = Some(trf!("保存失败：{err}", "Could not save: {err}").into());
+                cx.notify();
+                return;
+            }
+        };
+        self.status = Some(
+            tr(
+                "已新建片段 · 按 F2 可以给它起个名字",
+                "Snippet created · press F2 to name it",
+            )
+            .into(),
+        );
+        self.editing = None;
+        self.refresh(cx);
+        if let Some(pos) = self.items.iter().position(|c| c.uuid == uuid) {
+            self.selected = pos;
+            self.scroll.scroll_to_item(pos, ScrollStrategy::Nearest);
+        }
+        self.search.update(cx, |state, cx| state.focus(window, cx));
+        if then_paste && let Ok(Some(clip)) = self.store.get(&uuid) {
+            self.paste_clip(&clip, false, cx);
+        }
+    }
+
+    fn toggle_snippet(&mut self, pos: usize, cx: &mut Context<Self>) {
+        let Some(clip) = self.items.get(pos) else {
+            return;
+        };
+        let snippet = !clip.snippet;
+        self.status = Some(match self.store.set_snippet(&clip.uuid, snippet) {
+            Ok(()) if snippet => tr(
+                "已存为片段 · 粘贴时会替换 {date} {cursor} 等变量",
+                "Saved as a snippet · {date}, {cursor} and other variables are filled in when pasting",
+            )
+            .into(),
+            Ok(()) => tr("已取消片段", "No longer a snippet").into(),
+            Err(err) => trf!("操作失败：{err}", "Failed: {err}").into(),
+        });
+        self.refresh(cx);
+    }
+
+    fn on_new_snippet(&mut self, _: &NewSnippet, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.busy() {
+            self.start_new_snippet(window, cx);
         }
     }
 
@@ -1219,6 +1359,8 @@ impl Popup {
             MenuAction::Delete => self.delete(pos, cx),
             MenuAction::Edit => self.start_edit(pos, window, cx),
             MenuAction::EditNote => self.start_note(pos, window, cx),
+            MenuAction::ToggleSnippet => self.toggle_snippet(pos, cx),
+            MenuAction::NewSnippet => self.start_new_snippet(window, cx),
             MenuAction::ToggleQueue => self.toggle_queue(pos, cx),
             MenuAction::ClearQueue => self.clear_queue(cx),
         }
@@ -1567,6 +1709,7 @@ impl Popup {
             ),
         };
         let has_note = clip.note.is_some();
+        let is_snippet = clip.snippet;
 
         h_flex()
             .id(("row", clip.seq as usize))
@@ -1623,6 +1766,9 @@ impl Popup {
                         h_flex()
                             .min_w_0()
                             .gap_1()
+                            .when(is_snippet, |d| {
+                                d.child(Icon::new(Lucide::Scissors).xsmall().text_color(p.accent))
+                            })
                             .when(has_note, |d| {
                                 d.child(Icon::new(Lucide::StickyNote).xsmall().text_color(p.accent))
                             })
@@ -1675,7 +1821,15 @@ impl Popup {
     }
 
     fn render_empty(&self, p: &Palette) -> impl IntoElement {
-        let (title, subtitle) = if self.counts.total == 0 {
+        let (title, subtitle) = if self.filter() == Filter::Snippets && self.query.is_empty() {
+            (
+                tr("还没有片段", "No snippets yet"),
+                tr(
+                    "按 Ctrl+N 新建，或在 Ctrl+K 菜单里把一条记录存为片段",
+                    "Press Ctrl+N to create one, or save an item as a snippet from the Ctrl+K menu",
+                ),
+            )
+        } else if self.counts.total == 0 {
             (
                 tr("还没有任何记录", "Nothing here yet"),
                 tr(
@@ -1946,6 +2100,21 @@ impl Popup {
                             )),
                     )
                     .child(div().flex_1())
+                    .when(clip.snippet, |d| {
+                        d.child(
+                            h_flex()
+                                .flex_none()
+                                .gap_1()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded(design::RADIUS_SM)
+                                .bg(p.accent_soft)
+                                .text_xs()
+                                .text_color(p.accent_text)
+                                .child(Icon::new(Lucide::Scissors).xsmall())
+                                .child(tr("片段", "Snippet")),
+                        )
+                    })
                     .when(clip.has_rich, |d| {
                         d.child(
                             div()
@@ -1988,6 +2157,30 @@ impl Popup {
                             p,
                         )))
                         .child(div().flex_none().child(kbd("F2", p))),
+                )
+            })
+            .when_some(self.snippet_expansion(clip), |d, e| {
+                d.child(
+                    v_flex()
+                        .gap_1()
+                        .px_3()
+                        .py_2()
+                        .rounded(design::RADIUS_MD)
+                        .border_1()
+                        .border_color(p.divider)
+                        .bg(p.code_bg)
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(p.text_faint)
+                                .child(tr("粘贴出来是：", "Pastes as:")),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(p.text)
+                                .child(preview_text(&e.text)),
+                        ),
                 )
             })
             .child(
@@ -2067,6 +2260,8 @@ impl Popup {
             .as_ref()
             .filter(|c| Some(&c.uuid) == self.editing.as_ref());
         let rich = target.is_some_and(|c| c.has_rich);
+        let new_snippet = self.editing.as_deref() == Some(NEW_SNIPPET);
+        let is_snippet = new_snippet || target.is_some_and(|c| c.snippet);
         v_flex()
             .flex_1()
             .min_w_0()
@@ -2093,7 +2288,11 @@ impl Popup {
                             .text_sm()
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(p.text)
-                            .child(tr("编辑", "Edit")),
+                            .child(if new_snippet {
+                                tr("新建片段", "New snippet")
+                            } else {
+                                tr("编辑", "Edit")
+                            }),
                     )
                     .when_some(target, |d, clip| {
                         d.child(
@@ -2125,7 +2324,27 @@ impl Popup {
                             .h(relative(1.)),
                     ),
             )
-            .child(div().text_xs().text_color(p.text_faint).child(if rich {
+            .when(is_snippet, |d| {
+                d.child(
+                    h_flex()
+                        .flex_wrap()
+                        .gap_1()
+                        .text_xs()
+                        .text_color(p.text_muted)
+                        .child(tr("可用变量：", "Variables: "))
+                        .children(
+                            ["{date}", "{time}", "{weekday}", "{clipboard}", "{cursor}"]
+                                .into_iter()
+                                .map(|v| kbd(v, p)),
+                        ),
+                )
+            })
+            .child(div().text_xs().text_color(p.text_faint).child(if new_snippet {
+                tr(
+                    "保存后出现在「片段」分类里，永远不会被自动清理。",
+                    "Saved snippets appear under Snippets and are never cleaned up automatically.",
+                )
+            } else if rich {
                 tr("保存后替换这条记录。原来带的格式（字体、颜色等）会去掉，只保留文字。", "Saving replaces this item. Its formatting (fonts, colors…) is dropped; only the text is kept.")
             } else {
                 tr("保存后替换这条记录，位置和收藏状态不变。", "Saving replaces this item; its position and pin stay the same.")
@@ -2278,6 +2497,7 @@ impl Render for Popup {
             .on_action(cx.listener(Self::on_save_edit_and_paste))
             .on_action(cx.listener(Self::on_cancel_edit))
             .on_action(cx.listener(Self::on_edit_note))
+            .on_action(cx.listener(Self::on_new_snippet))
             .on_action(cx.listener(Self::on_save_note))
             .on_action(cx.listener(Self::on_cancel_note))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
