@@ -163,4 +163,16 @@ pub fn apply_brand(cx: &mut gpui_kit::App) {
     theme.primary_active = if dark { shade(-0.16) } else { shade(-0.06) };
     theme.primary_foreground = gpui_kit::white();
     theme.ring = p.accent;
+    // 组件实际读取的是由 colors 推导出的 tokens（开关、主按钮都用它），推导之后改 colors 不会同步，要一起改
+    let (primary, hover, active) = (theme.primary, theme.primary_hover, theme.primary_active);
+    let fg = theme.primary_foreground;
+    theme.tokens.primary = primary.into();
+    theme.tokens.primary_hover = hover.into();
+    theme.tokens.primary_active = active.into();
+    theme.tokens.primary_foreground = fg.into();
+    theme.tokens.button_primary = primary.into();
+    theme.tokens.button_primary_hover = hover.into();
+    theme.tokens.button_primary_active = active.into();
+    theme.tokens.button_primary_foreground = fg.into();
+    theme.tokens.ring = p.accent.into();
 }

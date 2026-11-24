@@ -245,30 +245,66 @@ pub fn memory_mb() -> (f64, f64) {
     )
 }
 
-/// 跨进程的"请显示"信号（命名的自动重置事件）
-pub struct ShowRequests(isize);
+/// 跨进程信号（命名的自动重置事件）：另一个实例发来的请求
+pub struct InstanceSignal(isize);
 
-impl ShowRequests {
-    /// 阻塞等待下一次显示请求；句柄失效时返回 false
+impl InstanceSignal {
+    /// 阻塞等待下一次请求；句柄失效时返回 false
     pub fn wait(&self) -> bool {
         unsafe { WaitForSingleObject(HANDLE(self.0 as *mut _), INFINITE).0 == 0 }
     }
 }
 
+// 句柄只用于等待，可以在线程间移动
+unsafe impl Send for InstanceSignal {}
+
+pub struct InstanceSignals {
+    /// "显示弹窗"（双击快捷方式、再次启动）
+    pub show: InstanceSignal,
+    /// "打开设置"（以 --settings 启动）
+    pub settings: InstanceSignal,
+}
+
 /// 单实例：第一个实例返回 `Some`，用来接收之后的"请显示"请求；
 /// 已经有实例在运行时，通知它显示出来并返回 `None`（调用方应直接退出）。
+/// 单实例：第一个实例返回 `Some`，用来接收之后的请求；
+/// 已经有实例在运行时，把请求（显示弹窗 / 打开设置）转给它并返回 `None`（调用方应直接退出）。
+///
 /// `instance_key`：区分不同数据目录的实例（开发测试时可以和正式实例同时运行），默认为空。
-pub fn acquire_single_instance(instance_key: &str) -> Option<ShowRequests> {
-    let name = windows::core::HSTRING::from(format!(r"Local\Tessel.ShowRequest{instance_key}"));
-    unsafe {
-        let event = CreateEventW(None, false, false, &name).ok()?;
-        if GetLastError() == ERROR_ALREADY_EXISTS {
+pub fn acquire_single_instance(instance_key: &str, want_settings: bool) -> Option<InstanceSignals> {
+    let event = |kind: &str| {
+        let name = windows::core::HSTRING::from(format!(r"Local\Tessel.{kind}{instance_key}"));
+        unsafe { CreateEventW(None, false, false, &name) }.ok()
+    };
+    let show = event("ShowRequest")?;
+    // 必须紧跟在第一次 CreateEventW 之后读取
+    let already_running = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+    let settings = event("SettingsRequest")?;
+    if already_running {
+        unsafe {
             // 我们是用户刚启动的进程，拥有前台权限；把它让给已经在运行的那个实例
             let _ = AllowSetForegroundWindow(ASFW_ANY);
-            let _ = SetEvent(event);
-            return None;
+            let _ = SetEvent(if want_settings { settings } else { show });
         }
-        Some(ShowRequests(event.0 as isize))
+        return None;
+    }
+    Some(InstanceSignals {
+        show: InstanceSignal(show.0 as isize),
+        settings: InstanceSignal(settings.0 as isize),
+    })
+}
+
+/// 普通窗口（设置窗口）切到前台：最小化了就先还原
+pub fn restore_and_focus(raw: isize) {
+    use windows::Win32::UI::WindowsAndMessaging::{IsIconic, SW_RESTORE};
+    unsafe {
+        let cmd = if IsIconic(hwnd(raw)).as_bool() {
+            SW_RESTORE
+        } else {
+            SW_SHOW
+        };
+        let _ = ShowWindow(hwnd(raw), cmd);
+        let _ = SetForegroundWindow(hwnd(raw));
     }
 }
 

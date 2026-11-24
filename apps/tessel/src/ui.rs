@@ -1039,9 +1039,16 @@ impl Popup {
                             .bg(p.code_bg)
                             .overflow_hidden()
                             .p_2()
+                            .flex()
+                            .items_center()
+                            .justify_center()
                             .child(
+                                // GPUI 的 img 会把图片自身的宽高比设为布局的 aspect_ratio，
+                                // 同时给宽和高时高度会被宽度推算覆盖，方图就被裁掉了。
+                                // 所以只限制最大宽高，让图片按比例缩进框里。
                                 img(info.path.clone())
-                                    .size_full()
+                                    .max_w_full()
+                                    .max_h(px(244.))
                                     .object_fit(ObjectFit::Contain),
                             ),
                     )

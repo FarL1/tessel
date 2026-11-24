@@ -30,8 +30,10 @@ pub struct SettingsView {
     recording: bool,
     recorder_focus: FocusHandle,
     add_app: Entity<InputState>,
-    /// 配置未生效的原因（热键被占用等）
+    /// 配置未生效的原因（文件有错、热键被占用等），随下一次重载结果更新
     error: Option<SharedString>,
+    /// 一次性提示（例如"新热键被占用，已恢复为旧热键"），不会被配置重载清掉，下次录制时清除
+    notice: Option<SharedString>,
     storage: String,
     logo: Arc<Image>,
     _subscriptions: Vec<Subscription>,
@@ -55,9 +57,20 @@ impl SettingsView {
                     this.add_ignored_app(window, cx);
                 }
             }),
-            // 录制时点到别处：取消录制
+            // 录制时点到别处、切到别的窗口：取消录制
             cx.on_blur(&recorder_focus, window, |this, _, cx| {
                 this.stop_recording(cx)
+            }),
+            cx.observe_window_activation(window, |this, window, cx| {
+                if !window.is_window_active() {
+                    this.stop_recording(cx);
+                }
+            }),
+            // 录制中直接关掉窗口：视图销毁时也要恢复全局热键
+            cx.on_release(|this, _| {
+                if this.recording {
+                    let _ = this.tx.try_send(AppCommand::HotkeyRecording(false));
+                }
             }),
         ];
         let storage = storage_summary(&dir);
@@ -70,6 +83,7 @@ impl SettingsView {
             recorder_focus,
             add_app,
             error: None,
+            notice: None,
             storage,
             logo: Arc::new(Image::from_bytes(
                 ImageFormat::Png,
@@ -79,11 +93,24 @@ impl SettingsView {
         }
     }
 
-    /// 修改配置：写回文件，并立刻通知主线程重新加载（不等文件监视器）
+    /// 修改配置：以文件里的最新内容为准，只改这一项，写回文件，并立刻通知主线程重新加载。
+    ///
+    /// 不能直接保存 `self.config`：它可能是过期的（刚在编辑器里改过文件，监视器还没触发），
+    /// 也可能是文件出错时的默认值，直接保存会覆盖用户的设置。
     fn change(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Config)) {
-        f(&mut self.config);
-        match self.config.save(&self.dir) {
+        let mut config = match Config::load_or_create(&self.dir) {
+            Ok(config) => config,
+            Err(err) => {
+                self.error = Some(format!("{err}。请先修正 config.toml，再在这里修改。").into());
+                cx.notify();
+                return;
+            }
+        };
+        f(&mut config);
+        match config.save(&self.dir) {
             Ok(()) => {
+                // 保存成功后才更新界面，避免界面和实际生效的设置不一致
+                self.config = config;
                 let _ = self.tx.try_send(AppCommand::ConfigChanged);
             }
             Err(err) => {
@@ -91,6 +118,11 @@ impl SettingsView {
                 self.error = Some(err.into());
             }
         }
+        cx.notify();
+    }
+
+    pub fn set_notice(&mut self, notice: String, cx: &mut Context<Self>) {
+        self.notice = Some(notice.into());
         cx.notify();
     }
 
@@ -129,6 +161,7 @@ impl SettingsView {
             return;
         }
         self.recording = true;
+        self.notice = None;
         self.recorder_focus.focus(window, cx);
         // 暂时注销全局热键，否则按下当前热键会被系统截走，录不到
         let _ = self.tx.try_send(AppCommand::HotkeyRecording(true));
@@ -212,12 +245,9 @@ impl SettingsView {
             .update(cx, |state, cx| state.set_value("", window, cx));
     }
 
-    fn remove_ignored_app(&mut self, ix: usize, cx: &mut Context<Self>) {
-        self.change(cx, |c| {
-            if ix < c.ignored_apps.len() {
-                c.ignored_apps.remove(ix);
-            }
-        });
+    fn remove_ignored_app(&mut self, name: String, cx: &mut Context<Self>) {
+        // 按名字删除：文件可能在外部被改过，序号不可靠
+        self.change(cx, |c| c.ignored_apps.retain(|app| *app != name));
     }
 }
 
@@ -457,11 +487,12 @@ impl SettingsView {
                                 .cursor_pointer()
                                 .text_color(p.text_faint)
                                 .hover(move |s| s.bg(p.selected).text_color(p.text))
-                                .on_click(
+                                .on_click({
+                                    let app = app.clone();
                                     cx.listener(move |this, _, _, cx| {
-                                        this.remove_ignored_app(i, cx)
-                                    }),
-                                )
+                                        this.remove_ignored_app(app.clone(), cx)
+                                    })
+                                })
                                 .child(Icon::new(IconName::Close).xsmall()),
                         )
                 }),
@@ -654,7 +685,7 @@ impl Render for SettingsView {
                         .child(div().text_sm().child("Tessel 设置")),
                 ),
             )
-            .when_some(self.error.clone(), |d, err| {
+            .when_some(self.error.clone().or(self.notice.clone()), |d, err| {
                 d.child(
                     h_flex()
                         .mx_6()

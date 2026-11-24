@@ -142,11 +142,16 @@ impl Config {
         use toml_edit::{Array, DocumentMut, value};
 
         let path = Self::path(data_dir);
-        let existing = std::fs::read_to_string(&path).unwrap_or_else(|_| DEFAULT_FILE.into());
+        // 文件不存在时从带注释的模板开始；文件存在但不是合法 TOML 时拒绝保存，
+        // 绝不能用模板覆盖用户写了一半的配置
+        let existing = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => DEFAULT_FILE.into(),
+            Err(e) => return Err(format!("无法读取配置文件：{e}")),
+        };
         let mut doc: DocumentMut = existing
             .parse()
-            .or_else(|_| DEFAULT_FILE.parse())
-            .map_err(|e| format!("无法解析配置文件：{e}"))?;
+            .map_err(|_| "config.toml 有语法错误，请先修正后再保存".to_string())?;
 
         doc["hotkey"] = value(self.hotkey.as_str());
         doc["max_items"] = value(self.max_items as i64);
@@ -214,6 +219,17 @@ mod tests {
         let text = std::fs::read_to_string(Config::path(&dir)).unwrap();
         assert!(text.contains("# 唤起弹窗的全局热键"), "注释应保留");
         assert_eq!(Config::parse(&text).unwrap(), c);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_refuses_to_overwrite_broken_file() {
+        let dir = std::env::temp_dir().join(format!("tessel-cfg-broken-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let broken = "hotkey = \"Ctrl+Q\"\ntheme = [未闭合\n";
+        std::fs::write(Config::path(&dir), broken).unwrap();
+        assert!(Config::default().save(&dir).is_err());
+        assert_eq!(std::fs::read_to_string(Config::path(&dir)).unwrap(), broken);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
