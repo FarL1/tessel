@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use tessel_core::{NewClip, Payload};
+use tessel_core::{NewClip, Payload, RichFormats};
 use windows::Win32::Foundation::{
     CloseHandle, HANDLE, HGLOBAL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM,
 };
@@ -52,6 +52,8 @@ const DEBOUNCE_MS: u32 = 40;
 const DEBOUNCE_TIMER: usize = 1;
 /// 超过这个大小的图片不记录
 const MAX_IMAGE_BYTES: usize = 40 * 1024 * 1024;
+/// 单个富格式（HTML / RTF）超过这个大小就只保留纯文本
+const MAX_RICH_BYTES: usize = 8 * 1024 * 1024;
 
 fn reg(name: &str) -> u32 {
     unsafe { RegisterClipboardFormatW(&HSTRING::from(name)) }
@@ -59,6 +61,8 @@ fn reg(name: &str) -> u32 {
 
 struct Formats {
     png: u32,
+    html: u32,
+    rtf: u32,
     exclude_monitor: u32,
     can_include_history: u32,
     viewer_ignore: u32,
@@ -68,6 +72,8 @@ impl Formats {
     fn new() -> Self {
         Self {
             png: reg("PNG"),
+            html: reg("HTML Format"),
+            rtf: reg("Rich Text Format"),
             exclude_monitor: reg("ExcludeClipboardContentFromMonitorProcessing"),
             can_include_history: reg("CanIncludeInClipboardHistory"),
             viewer_ignore: reg("Clipboard Viewer Ignore"),
@@ -402,6 +408,7 @@ fn on_clipboard_changed(hwnd: HWND, state: &mut WatcherState) {
             .clone()
     });
 
+    let mut rich = RichFormats::default();
     let payload = {
         let Some(_guard) = OpenedClipboard::open(Some(hwnd)) else {
             return;
@@ -435,6 +442,19 @@ fn on_clipboard_changed(hwnd: HWND, state: &mut WatcherState) {
             && let Some(text) = read_text()
             && !text.trim().is_empty()
         {
+            // 富格式：按原始字节保存，去掉结尾的 NUL（写回时再补上）
+            let read_rich = |fmt: u32| {
+                if !available.contains(&fmt) {
+                    return None;
+                }
+                let mut bytes = read_global(fmt)?;
+                while bytes.last() == Some(&0) {
+                    bytes.pop();
+                }
+                (!bytes.is_empty() && bytes.len() <= MAX_RICH_BYTES).then_some(bytes)
+            };
+            rich.html = read_rich(f.html);
+            rich.rtf = read_rich(f.rtf);
             Payload::Text(text)
         } else if let Some(image) = read_image(f, &available) {
             image
@@ -447,6 +467,7 @@ fn on_clipboard_changed(hwnd: HWND, state: &mut WatcherState) {
         payload,
         source,
         from_self,
+        rich,
     });
 }
 
@@ -492,6 +513,21 @@ pub fn write(owner: Option<isize>, content: WriteContent) -> Result<(), String> 
     // 先准备好所有数据，再打开剪贴板，尽量缩短占用时间
     let items: Vec<(u32, Vec<u8>)> = match content {
         WriteContent::Text(text) => vec![(CF_UNICODETEXT, utf16z(text))],
+        WriteContent::RichText { text, html, rtf } => {
+            let nul_terminated = |b: &[u8]| {
+                let mut v = b.to_vec();
+                v.push(0);
+                v
+            };
+            let mut items = vec![(CF_UNICODETEXT, utf16z(text))];
+            if let Some(html) = html {
+                items.push((reg("HTML Format"), nul_terminated(html)));
+            }
+            if let Some(rtf) = rtf {
+                items.push((reg("Rich Text Format"), nul_terminated(rtf)));
+            }
+            items
+        }
         WriteContent::Files(files) => {
             let text = files.join("\r\n");
             vec![

@@ -278,13 +278,18 @@ fn main() {
                         Payload::Image { .. } => "图片",
                     };
                     let source = clip.source.clone().unwrap_or_default();
+                    let rich = if clip.rich.is_empty() {
+                        ""
+                    } else {
+                        " · 含格式"
+                    };
                     let mut store = store.borrow_mut();
                     if let Ok(cfg) = keep_cfg.read() {
                         store.set_keep(cfg.max_items);
                     }
                     match store.record(clip) {
                         Ok(Some(seq)) => {
-                            debug_log(format!("[capture] {kind} · {source} · seq={seq}"));
+                            debug_log(format!("[capture] {kind}{rich} · {source} · seq={seq}"));
                             let _ = tx.try_send(AppCommand::ClipboardChanged);
                         }
                         Ok(None) => {}

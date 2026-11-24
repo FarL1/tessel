@@ -9,5 +9,5 @@ pub mod store;
 pub mod time;
 
 pub use config::{Config, ThemePref};
-pub use model::{Clip, Filter, ImageInfo, Kind, NewClip, Payload};
+pub use model::{Clip, Filter, ImageInfo, Kind, NewClip, Payload, RichFormats};
 pub use store::{Counts, Store};

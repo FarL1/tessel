@@ -275,7 +275,7 @@ UI 技术待定：Android 用 Jetpack Compose，iOS 用 SwiftUI，这是最自�
 - [x] 虚拟列表（uniform_list）：加载上限提到 1000 条，列表内容截断到 4000 字符，预览/粘贴按需取完整内容
 - [x] 忽略的应用在读取内容之前判断；来源应用在第一次变化通知时记录（兼容 .NET 程序写完即 OleFlushClipboard）
 - [ ] 图形化设置页（读写同一个 config.toml）
-- [ ] 富文本（HTML/RTF）保留与"粘贴为纯文本"
+- [x] 富文本：采集时原样保存 HTML Format / Rich Text Format，粘贴时原样写回；Shift+Enter / Ctrl+Shift+1–9 粘贴为纯文本（数据库 v2，自动迁移）
 - [ ] 安装包（MSI/NSIS）
 
 - 采集 → 去重 → 入库 → 列表 → 搜索 → 粘贴，完整闭环

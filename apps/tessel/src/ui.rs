@@ -241,7 +241,11 @@ impl Popup {
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let t0 = Instant::now();
         match self.store.search(&self.query, self.filter(), RESULT_LIMIT) {
-            Ok(items) => self.items = items,
+            Ok(items) => {
+                self.items = items;
+                // 记录可能被重新采集过（uuid 不变，但使用次数、时间、富格式会变）
+                self.preview = None;
+            }
             Err(err) => log_line(format!("[store] 搜索失败：{err}")),
         }
         if let Ok(counts) = self.store.counts() {
@@ -356,7 +360,8 @@ impl Popup {
         cx.notify();
     }
 
-    fn write_to_clipboard(&self, clip: &Clip) -> Result<(), String> {
+    /// `plain`：只写纯文本，丢掉 HTML / RTF 格式
+    fn write_to_clipboard(&self, clip: &Clip, plain: bool) -> Result<(), String> {
         let owner = Some(self.hwnd);
         match clip.kind {
             Kind::File => {
@@ -367,6 +372,20 @@ impl Popup {
                 let png = std::fs::read(path).map_err(|e| format!("读取图片失败：{e}"))?;
                 tessel_clipboard::write(owner, WriteContent::ImagePng(&png))
             }
+            _ if clip.has_rich && !plain => {
+                let rich = self
+                    .store
+                    .rich_formats(&clip.uuid)
+                    .map_err(|e| format!("读取格式失败：{e}"))?;
+                tessel_clipboard::write(
+                    owner,
+                    WriteContent::RichText {
+                        text: &clip.content,
+                        html: rich.html.as_deref(),
+                        rtf: rich.rtf.as_deref(),
+                    },
+                )
+            }
             _ => tessel_clipboard::write(owner, WriteContent::Text(&clip.content)),
         }
     }
@@ -376,7 +395,7 @@ impl Popup {
             return;
         };
         let t0 = Instant::now();
-        if let Err(err) = self.write_to_clipboard(&clip) {
+        if let Err(err) = self.write_to_clipboard(&clip, plain) {
             self.status = Some(format!("写入剪贴板失败：{err}").into());
             cx.notify();
             return;
@@ -1062,6 +1081,11 @@ impl Popup {
         } else {
             stats
         };
+        let stats = if clip.has_rich {
+            format!("{stats} · Shift+↵ 粘贴为纯文本")
+        } else {
+            stats
+        };
 
         v_flex()
             .flex_1()
@@ -1093,6 +1117,19 @@ impl Popup {
                             )),
                     )
                     .child(div().flex_1())
+                    .when(clip.has_rich, |d| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded(design::RADIUS_SM)
+                                .bg(p.accent_soft)
+                                .text_xs()
+                                .text_color(p.accent_text)
+                                .child("含格式"),
+                        )
+                    })
                     .when(clip.pinned, |d| {
                         d.child(
                             h_flex()

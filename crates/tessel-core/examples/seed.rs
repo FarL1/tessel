@@ -45,6 +45,7 @@ fn main() {
                 payload: Payload::Text(text),
                 source: Some(sources[i % sources.len()].into()),
                 from_self: false,
+                rich: Default::default(),
             })
             .unwrap();
     }

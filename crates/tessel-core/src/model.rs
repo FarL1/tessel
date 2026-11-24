@@ -97,10 +97,28 @@ pub enum Payload {
     },
 }
 
+/// 文本附带的富格式（网页、Word、Excel、邮件等复制时会带上）。
+/// 按剪贴板里的原始字节保存，粘贴时原样写回，保证格式不走样。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RichFormats {
+    /// Windows `HTML Format`（CF_HTML：带偏移量头的 UTF-8）
+    pub html: Option<Vec<u8>>,
+    /// `Rich Text Format`
+    pub rtf: Option<Vec<u8>>,
+}
+
+impl RichFormats {
+    pub fn is_empty(&self) -> bool {
+        self.html.is_none() && self.rtf.is_none()
+    }
+}
+
 /// 准备写入存储的一条记录
 #[derive(Clone, Debug)]
 pub struct NewClip {
     pub payload: Payload,
+    /// 只对文本有意义
+    pub rich: RichFormats,
     /// 来源应用的显示名（如 "Google Chrome"）
     pub source: Option<String>,
     /// 是否是 Tessel 自己写入剪贴板的（粘贴时）。这种情况只把已有记录提到最前，不改来源。
@@ -126,6 +144,8 @@ pub struct Clip {
     /// 代码的语言（识别结果），例如 "Rust"
     pub lang: Option<String>,
     pub image: Option<ImageInfo>,
+    /// 是否保存了富格式（HTML / RTF）；内容本身用 `Store::rich_formats()` 读取
+    pub has_rich: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

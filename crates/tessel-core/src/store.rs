@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 
 use crate::classify::classify_text;
-use crate::model::{Clip, Filter, ImageInfo, Kind, NewClip, Payload};
+use crate::model::{Clip, Filter, ImageInfo, Kind, NewClip, Payload, RichFormats};
 use crate::time::now_ms;
 
 pub type Result<T> = rusqlite::Result<T>;
@@ -25,7 +25,11 @@ const PRUNE_EVERY: u32 = 50;
 /// 默认最多保留的未收藏记录数
 pub const DEFAULT_KEEP: usize = 5_000;
 
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
+
+/// v1 → v2：文本的富格式
+const MIGRATE_V2: &str =
+    "ALTER TABLE clips ADD COLUMN html BLOB; ALTER TABLE clips ADD COLUMN rtf BLOB;";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS clips (
@@ -62,10 +66,10 @@ END;
 /// 列表查询只取内容的前 N 个字符（标题、文件数、颜色都够用），完整内容用 `get()` 按需读取
 pub const LIST_CONTENT_CHARS: usize = 4000;
 
-const LIST_COLUMNS: &str = "c.seq, c.uuid, c.kind, substr(c.content, 1, 4000), c.source,      c.created_at, c.last_used_at, c.use_count, c.pinned, c.lang, c.img_file, c.img_w, c.img_h, c.img_bytes";
+const LIST_COLUMNS: &str = "c.seq, c.uuid, c.kind, substr(c.content, 1, 4000), c.source,      c.created_at, c.last_used_at, c.use_count, c.pinned, c.lang, c.img_file, c.img_w, c.img_h, c.img_bytes, \n     (c.html IS NOT NULL OR c.rtf IS NOT NULL)";
 
 const COLUMNS: &str = "c.seq, c.uuid, c.kind, c.content, c.source, c.created_at, c.last_used_at, \
-     c.use_count, c.pinned, c.lang, c.img_file, c.img_w, c.img_h, c.img_bytes";
+     c.use_count, c.pinned, c.lang, c.img_file, c.img_w, c.img_h, c.img_bytes,      (c.html IS NOT NULL OR c.rtf IS NOT NULL)";
 
 /// 各分类的条数（用于分类标签上的数字）
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -106,8 +110,16 @@ impl Store {
         )?;
         let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version < SCHEMA_VERSION {
-            conn.execute_batch(SCHEMA)?;
-            conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
+            // 逐级迁移，放在一个事务里：中途失败不会留下半升级的数据库
+            let mut sql = String::from("BEGIN;");
+            if version < 1 {
+                sql.push_str(SCHEMA);
+            }
+            if version < 2 {
+                sql.push_str(MIGRATE_V2);
+            }
+            sql.push_str(&format!("PRAGMA user_version = {SCHEMA_VERSION}; COMMIT;"));
+            conn.execute_batch(&sql)?;
         }
         Ok(Self {
             conn,
@@ -125,6 +137,7 @@ impl Store {
     /// 返回记录的 seq；空内容返回 `None`。
     pub fn record(&mut self, new: NewClip) -> Result<Option<i64>> {
         let now = now_ms();
+        let rich = new.rich;
         let (kind, content, lang, image) = match new.payload {
             Payload::Text(text) => {
                 if text.trim().is_empty() {
@@ -166,7 +179,8 @@ impl Store {
         let tx = self.conn.transaction()?;
         let existing = tx
             .query_row(
-                "SELECT uuid, created_at, use_count, pinned, source, img_file, img_w, img_h, img_bytes
+                "SELECT uuid, created_at, use_count, pinned, source, img_file, img_w, img_h, img_bytes,
+                        html, rtf
                  FROM clips WHERE hash = ?1",
                 [&hash],
                 |r| {
@@ -180,22 +194,39 @@ impl Store {
                         r.get::<_, Option<i64>>(6)?,
                         r.get::<_, Option<i64>>(7)?,
                         r.get::<_, Option<i64>>(8)?,
+                        RichFormats {
+                            html: r.get(9)?,
+                            rtf: r.get(10)?,
+                        },
                     ))
                 },
             )
             .optional()?;
 
         let is_new = existing.is_none();
-        let (uuid, created_at, use_count, pinned, source, img_file, img_w, img_h, img_bytes) =
+        let (uuid, created_at, use_count, pinned, source, img_file, img_w, img_h, img_bytes, rich) =
             match existing {
-                Some((uuid, created, count, pinned, old_source, file, w, h, bytes)) => {
+                Some((uuid, created, count, pinned, old_source, file, w, h, bytes, old_rich)) => {
                     tx.execute("DELETE FROM clips WHERE hash = ?1", [&hash])?;
                     let source = if new.from_self {
                         old_source
                     } else {
                         new.source.or(old_source)
                     };
-                    (uuid, created, count + 1, pinned, source, file, w, h, bytes)
+                    // 这次没带富格式（比如"粘贴为纯文本"后被重新采集）时，保留之前的
+                    let rich = if rich.is_empty() { old_rich } else { rich };
+                    (
+                        uuid,
+                        created,
+                        count + 1,
+                        pinned,
+                        source,
+                        file,
+                        w,
+                        h,
+                        bytes,
+                        rich,
+                    )
                 }
                 None => {
                     let (file, w, h, bytes) = match &image {
@@ -226,14 +257,22 @@ impl Store {
                         w,
                         h,
                         bytes,
+                        rich,
                     )
                 }
             };
+        // 只有文本类才保存富格式
+        let rich = if image.is_none() && kind != Kind::File {
+            rich
+        } else {
+            RichFormats::default()
+        };
 
         tx.execute(
             "INSERT INTO clips (uuid, kind, content, hash, source, created_at, last_used_at,
-                                use_count, pinned, lang, img_file, img_w, img_h, img_bytes)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                                use_count, pinned, lang, img_file, img_w, img_h, img_bytes,
+                                html, rtf)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 uuid,
                 kind.as_str(),
@@ -248,7 +287,9 @@ impl Store {
                 img_file,
                 img_w,
                 img_h,
-                img_bytes
+                img_bytes,
+                rich.html,
+                rich.rtf
             ],
         )?;
         let seq = tx.last_insert_rowid();
@@ -273,6 +314,19 @@ impl Store {
                 |r| self.row_to_clip(r),
             )
             .optional()
+    }
+
+    /// 读取一条记录的富格式（列表和预览不需要，粘贴时才读）
+    pub fn rich_formats(&self, uuid: &str) -> Result<RichFormats> {
+        self.conn
+            .query_row("SELECT html, rtf FROM clips WHERE uuid = ?1", [uuid], |r| {
+                Ok(RichFormats {
+                    html: r.get(0)?,
+                    rtf: r.get(1)?,
+                })
+            })
+            .optional()
+            .map(Option::unwrap_or_default)
     }
 
     /// 清空所有未收藏的记录，返回删除的条数
@@ -413,6 +467,7 @@ impl Store {
             pinned: r.get(8)?,
             lang: r.get(9)?,
             image,
+            has_rich: r.get(14)?,
         })
     }
 }
@@ -437,6 +492,7 @@ mod tests {
             payload: Payload::Text(s.into()),
             source: Some(source.into()),
             from_self: false,
+            rich: Default::default(),
         }
     }
 
@@ -460,6 +516,7 @@ mod tests {
                 payload: Payload::Text("第二条内容".into()),
                 source: Some("Tessel".into()),
                 from_self: true,
+                rich: Default::default(),
             })
             .unwrap();
         let all = store.search("", Filter::All, 10).unwrap();
@@ -564,6 +621,7 @@ mod tests {
                 },
                 source: None,
                 from_self: false,
+                rich: Default::default(),
             })
             .unwrap();
         let clip = &store.search("", Filter::Kind(Kind::Image), 10).unwrap()[0];
@@ -571,5 +629,68 @@ mod tests {
         assert_eq!(std::fs::read(&info.path).unwrap(), png);
         store.delete(&clip.uuid).unwrap();
         assert!(!info.path.exists());
+    }
+
+    #[test]
+    fn rich_formats_kept_when_recaptured_plain() {
+        let mut store = temp_store("rich");
+        let rich = RichFormats {
+            html: Some("Version:0.9\r\n<b>加粗</b>".as_bytes().to_vec()),
+            rtf: Some(br"{\rtf1 {\b bold}}".to_vec()),
+        };
+        store
+            .record(NewClip {
+                payload: Payload::Text("加粗".into()),
+                source: Some("Word".into()),
+                from_self: false,
+                rich: rich.clone(),
+            })
+            .unwrap();
+        let clip = &store.search("", Filter::All, 1).unwrap()[0];
+        assert!(clip.has_rich);
+        assert_eq!(store.rich_formats(&clip.uuid).unwrap(), rich);
+
+        // "粘贴为纯文本"后被重新采集：不带富格式，旧的富格式要保留
+        store.record(text("加粗", "Tessel")).unwrap();
+        let clip = &store.search("", Filter::All, 1).unwrap()[0];
+        assert!(clip.has_rich);
+        assert_eq!(store.rich_formats(&clip.uuid).unwrap(), rich);
+
+        // 纯文本记录没有富格式
+        store.record(text("普通文本", "记事本")).unwrap();
+        let clip = &store.search("普通文本", Filter::All, 1).unwrap()[0];
+        assert!(!clip.has_rich);
+        assert!(store.rich_formats(&clip.uuid).unwrap().is_empty());
+    }
+
+    #[test]
+    fn migrates_v1_database() {
+        let dir = std::env::temp_dir().join(format!(
+            "tessel-test-migrate-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        {
+            // 造一个 v1 数据库（只有 v1 的表结构）并写入一条记录
+            let conn = Connection::open(dir.join("tessel.db")).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch("PRAGMA user_version = 1").unwrap();
+            conn.execute(
+                "INSERT INTO clips (uuid, kind, content, hash, created_at, last_used_at)
+                 VALUES ('u1', 'text', '旧版本的记录', 'h1', 1, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let store = Store::open(&dir).unwrap();
+        let version: i32 = store
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let clips = store.search("旧版本", Filter::All, 10).unwrap();
+        assert_eq!(clips.len(), 1);
+        assert!(!clips[0].has_rich);
     }
 }

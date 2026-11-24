@@ -38,6 +38,12 @@ pub fn spawn_watcher(
 /// 写回剪贴板的内容
 pub enum WriteContent<'a> {
     Text(&'a str),
+    /// 纯文本 + 原样保存的富格式（HTML Format / Rich Text Format 的原始字节）
+    RichText {
+        text: &'a str,
+        html: Option<&'a [u8]>,
+        rtf: Option<&'a [u8]>,
+    },
     Files(Vec<&'a str>),
     /// PNG 编码的图片
     ImagePng(&'a [u8]),
