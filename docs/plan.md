@@ -301,8 +301,10 @@ UI 技术待定：Android 用 Jetpack Compose，iOS 用 SwiftUI，这是最自�
 - [x] 界面多语言：`tessel-core::i18n`（`tr` / `trf!`，两种写法放在一处），`language = system|zh|en`，切换即时生效
 - [x] 拼音搜索：`pinyin` crate（只启用 plain），存储时生成"首字母 全拼"索引并放进全文索引；1–2 个字母只比对首字母，避免全拼里到处命中；界面高亮时把拼音匹配映射回汉字
 - [x] 备注与标签（`F2`）：`note` 列，`#标签` 写在备注里，`#标签` / `tag:` 过滤；全文索引改由 INSERT / UPDATE / DELETE 三个触发器维护（数据库 v3）
-- 数据导入导出；自动更新（候选方案：Velopack）
-- CLI + 本地 IPC
+- [x] 数据导入导出：JSON Lines（`tessel-core::backup`），图片和富格式 base64 内嵌，逐行读写；按内容哈希合并，新记录排在现有记录之后；分批提交，导入时采集照常进行
+- [x] CLI：`apps/tessel-cli`（search / get / copy / add / snippets / export / import），直接读写数据库，不依赖桌面端运行
+- [ ] 本地 IPC（命名管道）：让 CLI 能操作运行中的桌面端（粘贴队列、唤起弹窗）
+- [ ] 自动更新：等 GitHub 仓库和发布源就绪；velopack 1.3 目前是预发布版（1.3.39，2026-10），1.2.161 仍是最新正式版，届时再升级
 - **首个公开版本（v0.2.0）**（0.1.0 是 M1 完成时的内部版本），开始收集用户反馈
 - 发布前：升级 velopack 到 1.3（zip 漏洞，见 deny.toml）、代码签名（SignPath Foundation 申请）、自动更新发布源（GitHub Releases）
 

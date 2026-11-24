@@ -12,7 +12,7 @@
 
 <p align="center">
   <img alt="平台" src="https://img.shields.io/badge/平台-Windows%2010%20%7C%2011-4F46E5">
-  <img alt="版本" src="https://img.shields.io/badge/版本-0.1.2（内部测试）-7C3AED">
+  <img alt="版本" src="https://img.shields.io/badge/版本-0.1.3（内部测试）-7C3AED">
   <img alt="许可证" src="https://img.shields.io/badge/许可证-MIT%20OR%20Apache--2.0-0EA5E9">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2024%20edition-E57324">
 </p>
@@ -162,6 +162,24 @@ Tessel 是一个**剪贴板管理器**：它在后台记下你每一次复制（
 | `theme` | `"system"` | `"system"`（跟随系统）/ `"light"` / `"dark"` |
 | `ignored_apps` | 常见密码管理器 | 不记录这些程序复制的内容（按 exe 文件名，不区分大小写） |
 
+**备份和换电脑**：设置 → 数据 → 导出，会把历史（含图片、格式、备注、片段）保存成一个 `.jsonl` 文件；
+在新电脑上 设置 → 数据 → 导入 即可。重复导入不会产生重复记录，收藏、片段和备注会合并。
+也可以只导出收藏和片段，把自己的片段库分享给别人。
+
+## 命令行
+
+安装后自带命令行工具 `tessel-cli.exe`（在 `%LOCALAPPDATA%\Tessel.App\current\` 里），可以在脚本、启动器、AutoHotkey 里用剪贴板历史。
+它直接读写同一份数据，Tessel 不在运行也能用。
+
+```powershell
+tessel-cli search 会议 -n 5            # 搜索，语法和弹窗里一样（app: type: is: #标签 -排除、拼音）
+tessel-cli search hyjy --json          # 输出 JSON，方便脚本处理
+tessel-cli get 1                       # 输出最新一条的完整内容
+tessel-cli copy --snippet 签名         # 把备注里带"签名"的片段放到剪贴板（变量已替换）
+"常用回复" | tessel-cli add --snippet --note "回复 #客服"   # 新建片段
+tessel-cli export 备份.jsonl           # 导出（--kept 只导出收藏和片段）；import 导入
+```
+
 ## 隐私
 
 - 所有数据只保存在本机：`%LOCALAPPDATA%\Tessel\`（`tessel.db` + `images/` + `config.toml`）。没有账号、没有云端、没有统计上报。
@@ -205,6 +223,7 @@ with a few keystrokes:
 - Action menu (`Ctrl+K`): format JSON, strip tracking parameters from URLs, convert colors, edit before pasting
 - Snippets with variables (`{date}`, `{time}`, `{clipboard}`, `{cursor}`) and notes / `#tags`
 - English and Chinese UI (follows the Windows display language by default)
+- Backup / move to a new PC with export & import; a `tessel-cli` command line tool for scripts and launchers
 - Private by design: data stays on your machine; respects the "exclude from clipboard history" flag used by password managers
 
 An alternative to the built-in Windows clipboard history (`Win+V`), Ditto or CopyQ.
@@ -238,6 +257,7 @@ cargo run -p tessel
 | `crates/tessel-core` | 数据模型、内容识别、配置、SQLite 存储与搜索。不依赖 UI 和平台，可以单测 |
 | `crates/tessel-clipboard` | 平台剪贴板：事件驱动监听、遵守隐私标记的读取、按类型写回（目前是 Windows） |
 | `apps/tessel` | 桌面应用（GPUI）：弹窗、设置窗口、全局热键、托盘、粘贴 |
+| `apps/tessel-cli` | 命令行工具：搜索、读取、复制、添加、导入导出 |
 | `spikes/` | M0 技术验证程序，保留作参考 |
 | `tools/icon-gen` | 从 SVG 生成各尺寸 PNG 和 `.ico` |
 | `scripts/` | 打包脚本 |

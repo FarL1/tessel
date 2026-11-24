@@ -63,7 +63,7 @@ Velopack 的优点：
 | 时间 | 动作 |
 |---|---|
 | 创建 GitHub 仓库后 | 开启 Dependabot（`cargo`、`github-actions`），或者用 Renovate |
-| M2 开启自动更新前 | 升级 velopack 到 1.3（`vpk` 同步升级），删除 `deny.toml` 里的 `zip` 忽略项；用 `vpk upload github` 发布更新源 |
+| M2 开启自动更新前 | 升级 velopack 到 1.3（`vpk` 同步升级），删除 `deny.toml` 里的 `zip` 忽略项；用 `vpk upload github` 发布更新源。2026-11-24 复查：1.3.39 在 GitHub 上仍标为预发布版，暂不升级（未调用 `UpdateManager`，走不到有漏洞的解压代码） |
 | M2 公开发布前 | 申请 SignPath Foundation 签名；用 git-cliff 从提交记录生成 CHANGELOG |
 | M2 公开发布后 | 提交到 winget（用 Komac 或 wingetcreate 自动生成清单）和 Scoop |
 | 可选 | 用 cargo-nextest 跑测试（更快，输出更清楚）；加一个冷启动和内存的性能基准，防止退化 |

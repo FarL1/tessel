@@ -4,7 +4,14 @@
 
 ## [未发布]
 
+## [0.1.3] - 2026-11-24
+
+M2 第二批功能（内部测试版）。
+
 ### 新增
+
+- 导入导出：设置 → 数据，导出为一个 `.jsonl` 文件（含图片、格式、备注、片段），可以只导出收藏和片段；导入时内容相同的记录合并，不会重复
+- 命令行工具 `tessel-cli`：`search`（支持全部过滤语法和拼音，可输出 JSON）、`get`、`copy`（片段会展开变量）、`add`（可直接存为片段、加备注）、`snippets`、`export`、`import`；不需要 Tessel 正在运行
 
 - 英文界面：设置 → 外观 → 语言 / Language，可选跟随系统、简体中文、English，切换后立即生效（托盘菜单一起变）
 - 片段和模板：`Ctrl+N` 新建片段，或在 `Ctrl+K` 菜单里把记录存为片段；片段有单独的分类、永远不会被自动清理；粘贴时替换 `{date}` `{time}` `{datetime}` `{weekday}` `{clipboard}` `{cursor}`（也可以写中文变量名），`{cursor}` 让光标停在指定位置；预览区显示"粘贴出来是什么"；`is:snippet` 过滤
@@ -77,7 +84,8 @@ M1（Windows 本地版）完成，第一个可日常使用的版本。
 - 设置窗口与 `config.toml`（热加载、保留注释）
 - 安装包（Velopack，按用户安装，卸载保留数据）
 
-[未发布]: https://github.com/OWNER/tessel/compare/v0.1.2...HEAD
+[未发布]: https://github.com/OWNER/tessel/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/OWNER/tessel/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/OWNER/tessel/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/OWNER/tessel/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/OWNER/tessel/releases/tag/v0.1.0
