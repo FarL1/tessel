@@ -235,7 +235,7 @@ release 构建，2026-11-24：
 
 ## #5 / #6 热键 + 粘贴闭环（✅ 自动化通过，真实键盘待验证）
 
-程序：`spikes/popup-paste`（同时也是界面原型，见 `docs/images/popup-*.png`）。测试脚本：`spikes/popup-paste/tests/`。
+程序：`spikes/popup-paste`（M1 起已迁移为 `apps/tessel`；当时的界面原型截图见 `docs/images/m0/`）。测试脚本：`apps/tessel/tests/`。
 
 ### 结果（2026-11-24，debug 构建，依赖已开优化）
 

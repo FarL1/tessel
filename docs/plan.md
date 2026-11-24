@@ -296,7 +296,8 @@ UI 技术待定：Android 用 Jetpack Compose，iOS 用 SwiftUI，这是最自�
 - 标签、备注；拼音搜索（评估后决定）
 - 数据导入导出；自动更新（候选方案：Velopack）
 - CLI + 本地 IPC
-- **首个公开版本（v0.1）**，开始收集用户反馈
+- **首个公开版本（v0.2.0）**（0.1.0 是 M1 完成时的内部版本），开始收集用户反馈
+- 发布前：升级 velopack 到 1.3（zip 漏洞，见 deny.toml）、代码签名（SignPath Foundation 申请）、自动更新发布源（GitHub Releases）
 
 ### M3：多设备同步（桌面 ↔ 桌面）
 
