@@ -1,12 +1,14 @@
 //! 弹出面板的界面：搜索栏、分类标签、列表、预览、快捷键提示。
 
+use std::collections::VecDeque;
 use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::{h_flex, v_flex};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, Theme, ThemeMode};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -16,6 +18,7 @@ use tessel_core::{Clip, Config, Counts, Filter, Kind, Query, Store, ThemePref};
 
 use crate::action_menu::{self, ActionMenu, MenuAction};
 use crate::design::{self, Palette, parse_hex_color};
+use crate::toast::{self, Notice, Toast, Tone};
 use crate::{AppCommand, debug_log, log_line, win};
 
 actions!(
@@ -32,11 +35,18 @@ actions!(
         DeleteClip,
         OpenClip,
         OpenSettings,
-        OpenActionMenu
+        OpenActionMenu,
+        ToggleQueue,
+        StartEdit,
+        SaveEdit,
+        SaveEditAndPaste,
+        CancelEdit
     ]
 );
 
 const CONTEXT: &str = "ClipPopup";
+/// 编辑记录时预览区变成编辑框，键位上下文是 `ClipPopup > ClipEditor`
+const EDITOR_CONTEXT: &str = "ClipEditor";
 /// 一次最多加载的条数。列表是虚拟列表（只渲染可见的行），条数主要影响内存：
 /// 列表查询的内容已截断为 4000 字符，预览和粘贴时再按需读取完整内容。
 const RESULT_LIMIT: usize = 1000;
@@ -64,6 +74,17 @@ pub fn bind_keys(cx: &mut App) {
             KeyBinding::new("ctrl-o", OpenClip, c),
             KeyBinding::new("ctrl-,", OpenSettings, c),
             KeyBinding::new("ctrl-k", OpenActionMenu, c),
+            KeyBinding::new("ctrl-q", ToggleQueue, c),
+            KeyBinding::new("ctrl-e", StartEdit, c),
+        ]);
+    }
+    // 编辑框里：Enter 是换行，Esc 只退出编辑（不关闭弹窗）
+    for ctx in ["ClipEditor > Input", EDITOR_CONTEXT] {
+        let c = Some(ctx);
+        bindings.extend([
+            KeyBinding::new("ctrl-s", SaveEdit, c),
+            KeyBinding::new("ctrl-enter", SaveEditAndPaste, c),
+            KeyBinding::new("escape", CancelEdit, c),
         ]);
     }
     cx.bind_keys(bindings);
@@ -107,6 +128,16 @@ pub struct Popup {
     /// 打开中的动作菜单（Ctrl+K）
     menu: Option<ActionMenu>,
     menu_search: Entity<InputState>,
+    /// 复制提示、粘贴队列进度
+    toast: Option<Entity<Toast>>,
+    /// 粘贴队列（记录的 uuid），每按一次队列热键粘贴最前面的一条
+    queue: VecDeque<String>,
+    /// 还没处理的队列热键次数（等用户松开修饰键期间又按了几次）
+    queue_requests: usize,
+    queue_busy: bool,
+    /// 正在编辑的记录
+    editing: Option<String>,
+    editor: Entity<TextareaState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -127,6 +158,7 @@ impl Popup {
                 .placeholder("搜索剪贴板历史…   支持 app:微信  type:链接  -排除")
         });
         let menu_search = cx.new(|cx| InputState::new(window, cx).placeholder("搜索动作…"));
+        let editor = cx.new(|cx| TextareaState::new(window, cx));
 
         let subscriptions = vec![
             cx.subscribe_in(&menu_search, window, |this, state, event, _window, cx| {
@@ -157,12 +189,16 @@ impl Popup {
                     this.hide(false, cx);
                 } else if this.visible && active {
                     // GPUI 处理激活时会重置内部焦点，激活事件可能晚于 show() 到达，这里重新聚焦
-                    let input = if this.menu.is_some() {
-                        &this.menu_search
+                    if this.editing.is_some() {
+                        this.editor.update(cx, |state, cx| state.focus(window, cx));
                     } else {
-                        &this.search
-                    };
-                    input.update(cx, |state, cx| state.focus(window, cx));
+                        let input = if this.menu.is_some() {
+                            &this.menu_search
+                        } else {
+                            &this.search
+                        };
+                        input.update(cx, |state, cx| state.focus(window, cx));
+                    }
                 }
             }),
             // 主题设为"跟随系统"时，系统切换深浅色后实时更新
@@ -204,6 +240,12 @@ impl Popup {
             user_pos: None,
             menu: None,
             menu_search,
+            toast: None,
+            queue: VecDeque::new(),
+            queue_requests: 0,
+            queue_busy: false,
+            editing: None,
+            editor,
             _subscriptions: subscriptions,
         };
         this.apply_theme(window, cx);
@@ -302,10 +344,28 @@ impl Popup {
         cx.notify();
     }
 
-    /// 采集线程写入了新内容
-    pub fn on_clipboard_changed(&mut self, cx: &mut Context<Self>) {
+    pub fn set_toast(&mut self, toast: Entity<Toast>) {
+        self.toast = Some(toast);
+    }
+
+    fn show_toast(&self, notice: Notice, cx: &mut Context<Self>) {
+        if let Some(toast) = &self.toast {
+            toast.update(cx, |t, cx| t.show(notice, cx));
+        }
+    }
+
+    /// 采集线程写入了新内容。`notify`：用户自己复制的（不是 Tessel 写回的），提示"已复制"
+    pub fn on_clipboard_changed(&mut self, notify: bool, cx: &mut Context<Self>) {
         if self.visible {
             self.refresh(cx);
+            return;
+        }
+        if notify
+            && self.config.copy_toast
+            && let Ok(latest) = self.store.search("", Filter::All, 1)
+            && let Some(clip) = latest.first()
+        {
+            self.show_toast(Notice::copied(clip), cx);
         }
     }
 
@@ -335,6 +395,7 @@ impl Popup {
         self.prev_foreground = (prev != self.hwnd && prev != 0).then_some(prev);
         self.visible = true;
         self.menu = None;
+        self.editing = None;
         self.selected = 0;
         self.filter_ix = 0;
         self.status = None;
@@ -394,6 +455,8 @@ impl Popup {
         self.remember_position();
         self.visible = false;
         self.menu = None;
+        // 没保存的修改直接丢弃（点到外面、按热键关闭时）
+        self.editing = None;
         win::hide(self.hwnd);
         if restore_focus && let Some(prev) = self.prev_foreground {
             win::focus(prev);
@@ -434,11 +497,14 @@ impl Popup {
     }
 
     fn paste(&mut self, pos: usize, plain: bool, cx: &mut Context<Self>) {
-        let Some(clip) = self.full_clip(pos) else {
-            return;
-        };
+        if let Some(clip) = self.full_clip(pos) {
+            self.paste_clip(&clip, plain, cx);
+        }
+    }
+
+    fn paste_clip(&mut self, clip: &Clip, plain: bool, cx: &mut Context<Self>) {
         let t0 = Instant::now();
-        let written = self.write_to_clipboard(&clip, plain);
+        let written = self.write_to_clipboard(clip, plain);
         let what = format!(
             "{}{}",
             clip.kind.label(),
@@ -511,6 +577,248 @@ impl Popup {
         cx.notify();
     }
 
+    // ── 粘贴队列 ──
+
+    /// 队列热键的文字（提示用）
+    fn queue_hotkey_hint(&self) -> String {
+        if self.config.queue_hotkey.is_empty() {
+            "先在设置里设定粘贴队列热键".into()
+        } else {
+            format!("按 {} 依次粘贴", self.config.queue_hotkey)
+        }
+    }
+
+    /// 把第 `pos` 条加入 / 移出粘贴队列
+    fn toggle_queue(&mut self, pos: usize, cx: &mut Context<Self>) {
+        let Some(clip) = self.items.get(pos) else {
+            return;
+        };
+        let status = if let Some(i) = self.queue.iter().position(|u| *u == clip.uuid) {
+            self.queue.remove(i);
+            if self.queue.is_empty() {
+                "已移出，粘贴队列空了".to_string()
+            } else {
+                format!("已移出粘贴队列 · 还有 {} 条", self.queue.len())
+            }
+        } else {
+            self.queue.push_back(clip.uuid.clone());
+            format!(
+                "已加入粘贴队列第 {} 条 · {}",
+                self.queue.len(),
+                self.queue_hotkey_hint()
+            )
+        };
+        self.status = Some(status.into());
+        cx.notify();
+    }
+
+    fn clear_queue(&mut self, cx: &mut Context<Self>) {
+        self.queue.clear();
+        self.status = Some("已清空粘贴队列".into());
+        cx.notify();
+    }
+
+    /// 队列热键：粘贴队列里的下一条到当前窗口。
+    /// 热键触发时用户还按着修饰键（比如 Alt+Shift），等松开之后再发 Ctrl+V，
+    /// 否则目标程序收到的是 Ctrl+Alt+Shift+V。
+    pub fn paste_next(&mut self, cx: &mut Context<Self>) {
+        if self.visible {
+            self.hide(true, cx);
+        }
+        self.queue_requests += 1;
+        if self.queue_busy {
+            return;
+        }
+        self.queue_busy = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                let t0 = Instant::now();
+                while win::modifiers_held() && t0.elapsed() < Duration::from_secs(3) {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(15))
+                        .await;
+                }
+                let again = this
+                    .update(cx, |this, cx| {
+                        if win::modifiers_held() {
+                            this.queue_requests = 0;
+                            this.show_toast(
+                                Notice::new(Tone::Warning, Lucide::ListOrdered, "没有粘贴")
+                                    .detail("松开热键之后才会粘贴，请再按一次"),
+                                cx,
+                            );
+                        } else {
+                            this.queue_requests = this.queue_requests.saturating_sub(1);
+                            this.paste_queue_head(cx);
+                        }
+                        let again = this.queue_requests > 0;
+                        if !again {
+                            this.queue_busy = false;
+                        }
+                        again
+                    })
+                    .unwrap_or(false);
+                if !again {
+                    break;
+                }
+                // 连续粘贴之间留一点时间，让目标程序先读完剪贴板
+                cx.background_executor()
+                    .timer(Duration::from_millis(300))
+                    .await;
+            }
+        })
+        .detach();
+    }
+
+    fn paste_queue_head(&mut self, cx: &mut Context<Self>) {
+        while let Some(uuid) = self.queue.pop_front() {
+            // 排队之后被删掉的记录直接跳过
+            let Ok(Some(clip)) = self.store.get(&uuid) else {
+                continue;
+            };
+            let notice = match self.write_to_clipboard(&clip, false) {
+                Ok(()) => {
+                    win::send_ctrl_v();
+                    log_line(format!(
+                        "[queue] 粘贴{} → 「{}」· 还剩 {} 条",
+                        clip.kind.label(),
+                        win::window_title(win::foreground()),
+                        self.queue.len()
+                    ));
+                    let left = self.queue.len();
+                    Notice::new(
+                        if left == 0 { Tone::Success } else { Tone::Info },
+                        Lucide::ListOrdered,
+                        if left == 0 {
+                            "队列已全部粘贴"
+                        } else {
+                            "已粘贴"
+                        },
+                    )
+                    .tag(if left == 0 {
+                        "最后一条".to_string()
+                    } else {
+                        format!("还剩 {left} 条")
+                    })
+                    .detail(toast::summary(&clip))
+                }
+                Err(err) => Notice::new(Tone::Warning, Lucide::ListOrdered, "粘贴失败")
+                    .detail(format!("写入剪贴板失败：{err}")),
+            };
+            self.show_toast(notice, cx);
+            cx.notify();
+            return;
+        }
+        self.show_toast(
+            Notice::new(Tone::Warning, Lucide::ListOrdered, "粘贴队列是空的")
+                .detail("在 Tessel 里选中记录，按 Ctrl+Q 加入队列"),
+            cx,
+        );
+    }
+
+    // ── 编辑 ──
+
+    fn start_edit(&mut self, pos: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(clip) = self.full_clip(pos) else {
+            return;
+        };
+        if matches!(clip.kind, Kind::Image | Kind::File) {
+            self.status = Some("图片和文件不能编辑".into());
+            cx.notify();
+            return;
+        }
+        self.menu = None;
+        self.selected = pos;
+        self.editing = Some(clip.uuid.clone());
+        self.editor.update(cx, |state, cx| {
+            state.set_value(clip.content.replace("\r\n", "\n"), window, cx);
+            state.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn cancel_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editing = None;
+        self.search.update(cx, |state, cx| state.focus(window, cx));
+        cx.notify();
+    }
+
+    /// 保存修改；`then_paste`：保存后直接粘贴
+    fn save_edit(&mut self, then_paste: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(uuid) = self.editing.clone() else {
+            return;
+        };
+        let Ok(Some(original)) = self.store.get(&uuid) else {
+            self.status = Some("这条记录已经不存在了".into());
+            self.cancel_edit(window, cx);
+            return;
+        };
+        let mut text = self.editor.read(cx).value().to_string();
+        if text.trim().is_empty() {
+            self.status = Some("内容不能为空（要删除这条记录，请按 Esc 后再按 Shift+Del）".into());
+            cx.notify();
+            return;
+        }
+        // 编辑框里统一用 \n；原文是 Windows 换行就还原回去
+        if original.content.contains("\r\n") {
+            text = text.replace("\r\n", "\n").replace('\n', "\r\n");
+        }
+        if text != original.content {
+            match self.store.update_text(&uuid, &text) {
+                Ok(Some(_)) => self.status = Some("已保存修改".into()),
+                Ok(None) => {
+                    self.status = Some("这条记录不能修改".into());
+                    cx.notify();
+                    return;
+                }
+                Err(err) => {
+                    self.status = Some(format!("保存失败：{err}").into());
+                    cx.notify();
+                    return;
+                }
+            }
+        }
+        self.editing = None;
+        self.refresh(cx);
+        if let Some(pos) = self.items.iter().position(|c| c.uuid == uuid) {
+            self.selected = pos;
+            self.scroll.scroll_to_item(pos, ScrollStrategy::Nearest);
+        }
+        self.search.update(cx, |state, cx| state.focus(window, cx));
+        if then_paste && let Ok(Some(clip)) = self.store.get(&uuid) {
+            self.paste_clip(&clip, false, cx);
+        }
+    }
+
+    fn on_toggle_queue(&mut self, _: &ToggleQueue, _: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_none() {
+            self.toggle_queue(self.selected, cx);
+        }
+    }
+
+    fn on_start_edit(&mut self, _: &StartEdit, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_none() {
+            self.start_edit(self.selected, window, cx);
+        }
+    }
+
+    fn on_save_edit(&mut self, _: &SaveEdit, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_edit(false, window, cx);
+    }
+
+    fn on_save_edit_and_paste(
+        &mut self,
+        _: &SaveEditAndPaste,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_edit(true, window, cx);
+    }
+
+    fn on_cancel_edit(&mut self, _: &CancelEdit, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_edit(window, cx);
+    }
+
     fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
         let len = self.items.len();
         if len == 0 {
@@ -540,6 +848,7 @@ impl Popup {
         let mods = &event.keystroke.modifiers;
         debug_log(format!("[event] key_down {key:?} {mods:?}"));
         if self.menu.is_none()
+            && self.editing.is_none()
             && mods.control
             && key.len() == 1
             && (b'1'..=b'9').contains(&key.as_bytes()[0])
@@ -558,10 +867,16 @@ impl Popup {
     }
 
     fn on_next_filter(&mut self, _: &NextFilter, _: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_some() {
+            return;
+        }
         self.select_filter(self.filter_ix + 1, cx);
     }
 
     fn on_prev_filter(&mut self, _: &PrevFilter, _: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_some() {
+            return;
+        }
         self.select_filter(self.filter_ix + Filter::ALL.len() - 1, cx);
     }
 
@@ -570,14 +885,23 @@ impl Popup {
     }
 
     fn on_paste(&mut self, _: &PasteSelected, _: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_some() {
+            return;
+        }
         self.paste(self.selected, false, cx);
     }
 
     fn on_paste_plain(&mut self, _: &PastePlainText, _: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_some() {
+            return;
+        }
         self.paste(self.selected, true, cx);
     }
 
     fn on_toggle_pin(&mut self, _: &TogglePin, _: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_some() {
+            return;
+        }
         self.toggle_pin(self.selected, cx);
     }
 
@@ -602,6 +926,9 @@ impl Popup {
     }
 
     fn on_delete(&mut self, _: &DeleteClip, _: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_some() {
+            return;
+        }
         self.delete(self.selected, cx);
     }
 
@@ -628,12 +955,16 @@ impl Popup {
     }
 
     fn on_open_menu(&mut self, _: &OpenActionMenu, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_some() {
+            return;
+        }
         let Some(clip) = self.full_clip(self.selected) else {
             return;
         };
         self.menu_search
             .update(cx, |state, cx| state.set_value("", window, cx));
-        self.menu = Some(ActionMenu::new(&clip));
+        let queued = self.queue.iter().position(|u| *u == clip.uuid);
+        self.menu = Some(ActionMenu::new(&clip, queued, self.queue.len()));
         self.menu_search
             .update(cx, |state, cx| state.focus(window, cx));
         cx.notify();
@@ -719,10 +1050,16 @@ impl Popup {
             }
             MenuAction::TogglePin => self.toggle_pin(pos, cx),
             MenuAction::Delete => self.delete(pos, cx),
+            MenuAction::Edit => self.start_edit(pos, window, cx),
+            MenuAction::ToggleQueue => self.toggle_queue(pos, cx),
+            MenuAction::ClearQueue => self.clear_queue(cx),
         }
     }
 
     fn on_open(&mut self, _: &OpenClip, _: &mut Window, cx: &mut Context<Self>) {
+        if self.editing.is_some() {
+            return;
+        }
         self.open(self.selected, cx);
     }
 
@@ -1023,6 +1360,7 @@ impl Popup {
         let p = *p;
         let clip = &self.items[pos];
         let is_selected = pos == self.selected;
+        let queue_pos = self.queue.iter().position(|u| *u == clip.uuid);
         let meta = format!(
             "{} · {}",
             clip.source.as_deref().unwrap_or("未知来源"),
@@ -1057,7 +1395,10 @@ impl Popup {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                    if event.click_count >= 2 {
+                    if this.editing.is_some() {
+                        this.status = Some("正在编辑：Ctrl+S 保存，Esc 放弃修改".into());
+                        cx.notify();
+                    } else if event.click_count >= 2 {
                         this.paste(pos, false, cx);
                     } else {
                         this.selected = pos;
@@ -1090,6 +1431,21 @@ impl Popup {
                 h_flex()
                     .flex_none()
                     .gap_1p5()
+                    .when_some(queue_pos, |d, n| {
+                        d.child(
+                            h_flex()
+                                .flex_none()
+                                .h(px(18.))
+                                .px_1()
+                                .gap_0p5()
+                                .rounded(px(4.))
+                                .bg(p.accent_soft)
+                                .text_color(p.accent_text)
+                                .text_size(px(11.))
+                                .child(Icon::new(Lucide::ListOrdered).xsmall())
+                                .child(format!("{}", n + 1)),
+                        )
+                    })
                     .when(clip.pinned, |d| {
                         d.child(
                             Icon::new(IconName::StarFill)
@@ -1384,6 +1740,77 @@ impl Popup {
             .child(div().text_xs().text_color(p.text_faint).child(stats))
     }
 
+    fn render_editor(&self, p: &Palette) -> impl IntoElement {
+        let target = self
+            .preview
+            .as_ref()
+            .filter(|c| Some(&c.uuid) == self.editing.as_ref());
+        let rich = target.is_some_and(|c| c.has_rich);
+        v_flex()
+            .flex_1()
+            .min_w_0()
+            .p_4()
+            .gap_3()
+            .bg(p.surface)
+            .key_context(EDITOR_CONTEXT)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .size(px(22.))
+                            .flex_none()
+                            .rounded(design::RADIUS_MD)
+                            .bg(p.accent_soft)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(Icon::new(Lucide::SquarePen).xsmall().text_color(p.accent)),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(p.text)
+                            .child("编辑"),
+                    )
+                    .when_some(target, |d, clip| {
+                        d.child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .text_color(p.text_faint)
+                                .child(format!(
+                                    "{} · {}",
+                                    clip.kind.label(),
+                                    clip.source.as_deref().unwrap_or("未知来源")
+                                )),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .p_2()
+                    .rounded(design::RADIUS_MD)
+                    .bg(p.search_bg)
+                    .border_1()
+                    .border_color(p.search_border)
+                    .child(
+                        Textarea::new(&self.editor)
+                            .appearance(false)
+                            .h(relative(1.)),
+                    ),
+            )
+            .child(div().text_xs().text_color(p.text_faint).child(if rich {
+                "保存后替换这条记录。原来带的格式（字体、颜色等）会去掉，只保留文字。"
+            } else {
+                "保存后替换这条记录，位置和收藏状态不变。"
+            }))
+    }
+
     fn render_footer(&self, p: &Palette) -> impl IntoElement {
         h_flex()
             .h(px(38.))
@@ -1394,12 +1821,34 @@ impl Popup {
             .border_color(p.divider)
             .text_xs()
             .text_color(p.text_muted)
-            .child(hint(&["↵"], "粘贴", p))
-            .child(hint(&["Ctrl", "1–9"], "快速粘贴", p))
-            .child(hint(&["Ctrl", "K"], "更多动作", p))
-            .child(hint(&["Ctrl", "P"], "收藏", p))
-            .child(hint(&["Tab"], "分类", p))
+            .map(|d| {
+                if self.editing.is_some() {
+                    d.child(hint(&["Ctrl", "S"], "保存", p))
+                        .child(hint(&["Ctrl", "↵"], "保存并粘贴", p))
+                        .child(hint(&["Esc"], "放弃修改", p))
+                } else {
+                    d.child(hint(&["↵"], "粘贴", p))
+                        .child(hint(&["Ctrl", "K"], "更多动作", p))
+                        .child(hint(&["Ctrl", "E"], "编辑", p))
+                        .child(hint(&["Ctrl", "Q"], "加入队列", p))
+                        .child(hint(&["Tab"], "分类", p))
+                }
+            })
             .child(div().flex_1())
+            .when(!self.queue.is_empty(), |d| {
+                d.child(
+                    h_flex()
+                        .flex_none()
+                        .h(px(20.))
+                        .px_1p5()
+                        .gap_1()
+                        .rounded(px(4.))
+                        .bg(p.accent_soft)
+                        .text_color(p.accent_text)
+                        .child(Icon::new(Lucide::ListOrdered).xsmall())
+                        .child(format!("队列 {}", self.queue.len())),
+                )
+            })
             .map(|d| match (&self.config_error, &self.status) {
                 (Some(err), _) => d.child(
                     h_flex()
@@ -1409,9 +1858,13 @@ impl Popup {
                         .child(Icon::new(IconName::TriangleAlert).xsmall())
                         .child(div().truncate().child(err.clone())),
                 ),
-                (None, Some(status)) => {
-                    d.child(div().text_color(p.accent_text).child(status.clone()))
-                }
+                (None, Some(status)) => d.child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(p.accent_text)
+                        .child(status.clone()),
+                ),
                 (None, None) => d.child(hint(&["Esc"], "关闭", p)),
             })
     }
@@ -1426,10 +1879,13 @@ impl Render for Popup {
         if self.preview.as_ref().map(|c| &c.uuid) != selected_uuid.as_ref() {
             self.preview = self.full_clip(self.selected);
         }
-        let preview = self
-            .preview
-            .as_ref()
-            .map(|clip| self.render_preview(clip, &p).into_any_element());
+        let preview = if self.editing.is_some() {
+            Some(self.render_editor(&p).into_any_element())
+        } else {
+            self.preview
+                .as_ref()
+                .map(|clip| self.render_preview(clip, &p).into_any_element())
+        };
         let empty = self.items.is_empty();
         let menu = self.menu.as_ref().map(|menu| {
             let view = cx.entity().downgrade();
@@ -1488,6 +1944,11 @@ impl Render for Popup {
             .on_action(cx.listener(Self::on_menu_next))
             .on_action(cx.listener(Self::on_menu_close))
             .on_action(cx.listener(Self::on_menu_confirm))
+            .on_action(cx.listener(Self::on_toggle_queue))
+            .on_action(cx.listener(Self::on_start_edit))
+            .on_action(cx.listener(Self::on_save_edit))
+            .on_action(cx.listener(Self::on_save_edit_and_paste))
+            .on_action(cx.listener(Self::on_cancel_edit))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.on_key_down(event, cx);
             }))

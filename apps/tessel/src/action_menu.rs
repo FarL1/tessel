@@ -51,6 +51,11 @@ gpui_kit::assets::icon_assets!(
         CaseLower,
         Trash,
         Command,
+        Check,
+        ListOrdered,
+        ListPlus,
+        ListX,
+        SquarePen,
     ]
 );
 
@@ -82,6 +87,9 @@ pub enum MenuAction {
     Transform(Transform),
     TogglePin,
     Delete,
+    Edit,
+    ToggleQueue,
+    ClearQueue,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -173,7 +181,8 @@ pub struct ActionMenu {
 }
 
 impl ActionMenu {
-    pub fn new(clip: &Clip) -> Self {
+    /// `queued`：这条在粘贴队列里的位置；`queue_len`：队列里一共几条
+    pub fn new(clip: &Clip, queued: Option<usize>, queue_len: usize) -> Self {
         use MenuAction as A;
         let paste = Entry::new(A::Paste, "粘贴", IconName::ClipboardPaste, Group::Paste)
             .keys(&["↵"])
@@ -247,6 +256,49 @@ impl ActionMenu {
             entries.push(entry);
         }
 
+        if !matches!(clip.kind, Kind::Image | Kind::File) {
+            entries.push(
+                Entry::new(A::Edit, "编辑文本", IconName::SquarePen, Group::Manage)
+                    .detail("改完保存，替换这条记录")
+                    .keys(&["Ctrl", "E"])
+                    .keywords("edit modify 修改"),
+            );
+        }
+        entries.push(
+            match queued {
+                Some(i) => Entry::new(
+                    A::ToggleQueue,
+                    "移出粘贴队列",
+                    IconName::ListX,
+                    Group::Manage,
+                )
+                .detail(format!("现在排在第 {} 条", i + 1)),
+                None => Entry::new(
+                    A::ToggleQueue,
+                    "加入粘贴队列",
+                    IconName::ListPlus,
+                    Group::Manage,
+                )
+                .detail(format!(
+                    "排在第 {} 条，之后每按一次队列热键粘贴一条",
+                    queue_len + 1
+                )),
+            }
+            .keys(&["Ctrl", "Q"])
+            .keywords("queue 队列 排队 依次"),
+        );
+        if queue_len > 0 {
+            entries.push(
+                Entry::new(
+                    A::ClearQueue,
+                    "清空粘贴队列",
+                    IconName::ListOrdered,
+                    Group::Manage,
+                )
+                .detail(format!("队列里有 {queue_len} 条"))
+                .keywords("queue clear 队列"),
+            );
+        }
         entries.push(
             Entry::new(
                 A::TogglePin,

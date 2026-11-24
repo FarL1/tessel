@@ -21,14 +21,43 @@ use crate::{AppCommand, log_line};
 /// 历史条数的可选值
 const KEEP_OPTIONS: [usize; 4] = [1_000, 5_000, 20_000, 100_000];
 
+/// 正在录制哪个热键
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HotkeyTarget {
+    /// 唤起弹窗
+    Popup,
+    /// 粘贴队列的下一条
+    Queue,
+}
+
+impl HotkeyTarget {
+    fn ix(self) -> usize {
+        self as usize
+    }
+
+    fn spec(self, config: &Config) -> &str {
+        match self {
+            HotkeyTarget::Popup => &config.hotkey,
+            HotkeyTarget::Queue => &config.queue_hotkey,
+        }
+    }
+
+    fn set(self, config: &mut Config, spec: String) {
+        match self {
+            HotkeyTarget::Popup => config.hotkey = spec,
+            HotkeyTarget::Queue => config.queue_hotkey = spec,
+        }
+    }
+}
+
 pub struct SettingsView {
     dir: PathBuf,
     tx: async_channel::Sender<AppCommand>,
     config: Config,
     autostart: bool,
-    /// 正在录制新热键
-    recording: bool,
-    recorder_focus: FocusHandle,
+    /// 正在录制哪个热键
+    recording: Option<HotkeyTarget>,
+    recorder_focus: [FocusHandle; 2],
     add_app: Entity<InputState>,
     /// 配置未生效的原因（文件有错、热键被占用等），随下一次重载结果更新
     error: Option<SharedString>,
@@ -50,7 +79,7 @@ impl SettingsView {
     ) -> Self {
         let add_app =
             cx.new(|cx| InputState::new(window, cx).placeholder("程序文件名，例如 KeePassXC.exe"));
-        let recorder_focus = cx.focus_handle();
+        let recorder_focus = [cx.focus_handle(), cx.focus_handle()];
         let subscriptions = vec![
             cx.subscribe_in(&add_app, window, |this, _, event, window, cx| {
                 if let InputEvent::PressEnter { .. } = event {
@@ -58,8 +87,15 @@ impl SettingsView {
                 }
             }),
             // 录制时点到别处、切到别的窗口：取消录制
-            cx.on_blur(&recorder_focus, window, |this, _, cx| {
-                this.stop_recording(cx)
+            cx.on_blur(&recorder_focus[0], window, |this, _, cx| {
+                if this.recording == Some(HotkeyTarget::Popup) {
+                    this.stop_recording(cx)
+                }
+            }),
+            cx.on_blur(&recorder_focus[1], window, |this, _, cx| {
+                if this.recording == Some(HotkeyTarget::Queue) {
+                    this.stop_recording(cx)
+                }
             }),
             cx.observe_window_activation(window, |this, window, cx| {
                 if !window.is_window_active() {
@@ -68,7 +104,7 @@ impl SettingsView {
             }),
             // 录制中直接关掉窗口：视图销毁时也要恢复全局热键
             cx.on_release(|this, _| {
-                if this.recording {
+                if this.recording.is_some() {
                     let _ = this.tx.try_send(AppCommand::HotkeyRecording(false));
                 }
             }),
@@ -79,7 +115,7 @@ impl SettingsView {
             tx,
             config,
             autostart,
-            recording: false,
+            recording: None,
             recorder_focus,
             add_app,
             error: None,
@@ -156,34 +192,50 @@ impl SettingsView {
 
     // ── 热键录制 ──
 
-    fn start_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.recording {
+    fn start_recording(
+        &mut self,
+        target: HotkeyTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.recording == Some(target) {
             return;
         }
-        self.recording = true;
+        // 从一个录制框直接点到另一个：先结束上一个
+        self.stop_recording(cx);
+        self.recording = Some(target);
         self.notice = None;
-        self.recorder_focus.focus(window, cx);
+        self.recorder_focus[target.ix()].focus(window, cx);
         // 暂时注销全局热键，否则按下当前热键会被系统截走，录不到
         let _ = self.tx.try_send(AppCommand::HotkeyRecording(true));
         cx.notify();
     }
 
     fn stop_recording(&mut self, cx: &mut Context<Self>) {
-        if !self.recording {
+        if self.recording.is_none() {
             return;
         }
-        self.recording = false;
+        self.recording = None;
         let _ = self.tx.try_send(AppCommand::HotkeyRecording(false));
         cx.notify();
     }
 
     fn on_record_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        if !self.recording {
+        let Some(target) = self.recording else {
             return;
-        }
+        };
         cx.stop_propagation();
         let ks = &event.keystroke;
         if ks.key == "escape" {
+            self.stop_recording(cx);
+            return;
+        }
+        // 粘贴队列的热键可以清除（不使用）
+        if target == HotkeyTarget::Queue
+            && matches!(ks.key.as_str(), "backspace" | "delete")
+            && !ks.modifiers.modified()
+        {
+            self.change(cx, |c| c.queue_hotkey = String::new());
             self.stop_recording(cx);
             return;
         }
@@ -219,8 +271,17 @@ impl SettingsView {
             cx.notify();
             return;
         }
+        let other = match target {
+            HotkeyTarget::Popup => HotkeyTarget::Queue,
+            HotkeyTarget::Queue => HotkeyTarget::Popup,
+        };
+        if other.spec(&self.config).eq_ignore_ascii_case(&spec) {
+            self.error = Some(format!("「{spec}」已经用作另一个热键了，请换一个").into());
+            cx.notify();
+            return;
+        }
         // 先发 ConfigChanged 再发恢复热键：主线程按顺序处理，会直接注册新热键
-        self.change(cx, |c| c.hotkey = spec);
+        self.change(cx, |c| target.set(c, spec));
         self.stop_recording(cx);
     }
 
@@ -409,11 +470,17 @@ fn kbd(label: String, p: &Palette) -> Div {
 }
 
 impl SettingsView {
-    fn render_hotkey(&self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_hotkey(
+        &self,
+        target: HotkeyTarget,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let p = *p;
+        let spec = target.spec(&self.config).to_string();
         h_flex()
-            .id("hotkey-recorder")
-            .track_focus(&self.recorder_focus)
+            .id(("hotkey-recorder", target.ix()))
+            .track_focus(&self.recorder_focus[target.ix()])
             .min_w(px(180.))
             .h(px(36.))
             .px_2()
@@ -423,25 +490,32 @@ impl SettingsView {
             .border_1()
             .cursor_pointer()
             .map(|d| {
-                if self.recording {
+                if self.recording == Some(target) {
                     d.border_color(p.accent)
                         .bg(p.accent_soft)
                         .text_xs()
                         .text_color(p.accent_text)
-                        .child("请按下新的组合键（Esc 取消）")
+                        .child(match target {
+                            HotkeyTarget::Popup => "请按下新的组合键（Esc 取消）",
+                            HotkeyTarget::Queue => "按下组合键（Esc 取消，Backspace 清除）",
+                        })
+                } else if spec.is_empty() {
+                    d.border_color(p.border)
+                        .bg(p.search_bg)
+                        .hover(move |s| s.border_color(p.accent))
+                        .text_xs()
+                        .text_color(p.text_faint)
+                        .child("未设置，点击设置")
                 } else {
                     d.border_color(p.border)
                         .bg(p.search_bg)
                         .hover(move |s| s.border_color(p.accent))
-                        .children(
-                            self.config
-                                .hotkey
-                                .split('+')
-                                .map(|k| kbd(k.trim().to_string(), &p)),
-                        )
+                        .children(spec.split('+').map(|k| kbd(k.trim().to_string(), &p)))
                 }
             })
-            .on_click(cx.listener(|this, _, window, cx| this.start_recording(window, cx)))
+            .on_click(
+                cx.listener(move |this, _, window, cx| this.start_recording(target, window, cx)),
+            )
             .on_key_down(
                 cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_record_key(event, cx)),
             )
@@ -521,6 +595,7 @@ impl Render for SettingsView {
             keep_options.push((self.config.max_items, format!("{}", self.config.max_items)));
         }
         let auto_paste = self.config.auto_paste;
+        let copy_toast = self.config.copy_toast;
         let autostart = self.autostart;
 
         let general = card("通用", &p).child(
@@ -528,7 +603,14 @@ impl Render for SettingsView {
                 .child(row(
                     "唤起热键",
                     "在任何程序里按下它，打开剪贴板历史。点击右侧后按下新的组合键即可修改。",
-                    self.render_hotkey(&p, cx),
+                    self.render_hotkey(HotkeyTarget::Popup, &p, cx),
+                    false,
+                    &p,
+                ))
+                .child(row(
+                    "粘贴队列热键",
+                    "在弹窗里按 Ctrl+Q 把记录排进队列，之后在任何程序里每按一次这个热键，就按顺序粘贴下一条。",
+                    self.render_hotkey(HotkeyTarget::Queue, &p, cx),
                     false,
                     &p,
                 ))
@@ -540,6 +622,18 @@ impl Render for SettingsView {
                         .on_click(cx.listener(|this, checked: &bool, _, cx| {
                             let v = *checked;
                             this.change(cx, |c| c.auto_paste = v)
+                        })),
+                    false,
+                    &p,
+                ))
+                .child(row(
+                    "复制时显示提示",
+                    "每次复制成功，在屏幕底部显示一下复制了什么。",
+                    Switch::new("copy-toast")
+                        .checked(copy_toast)
+                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            let v = *checked;
+                            this.change(cx, |c| c.copy_toast = v)
                         })),
                     false,
                     &p,

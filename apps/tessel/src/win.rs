@@ -17,8 +17,9 @@ use windows::Win32::System::Threading::{
     CreateEventW, GetCurrentProcess, INFINITE, SetEvent, WaitForSingleObject,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP,
-    SendInput, SetFocus, VIRTUAL_KEY, VK_CONTROL, VK_V,
+    GetAsyncKeyState, GetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
+    KEYEVENTF_KEYUP, SendInput, SetFocus, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN,
+    VK_SHIFT, VK_V,
 };
 use windows::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -217,7 +218,25 @@ fn key(vk: VIRTUAL_KEY, up: bool) -> INPUT {
     }
 }
 
-fn send_ctrl_v() {
+/// 热键触发时按住的修饰键还没松开（这时发 Ctrl+V 会变成 Ctrl+Alt+Shift+V 之类）
+pub fn modifiers_held() -> bool {
+    [VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN]
+        .iter()
+        .any(|vk| unsafe { GetAsyncKeyState(vk.0 as i32) } as u16 & 0x8000 != 0)
+}
+
+/// 发送一个没有含义的按键（0xE8 未分配）。在按住 Alt / Win / Shift 的热键之后发一下，
+/// 松开修饰键时系统就不会当成"单独按了 Alt"（激活菜单栏）、"单独按了 Win"（打开开始菜单），
+/// 微软拼音也不会当成"单独按了 Shift"切换中英文。
+pub fn send_mask_key() {
+    let mask = VIRTUAL_KEY(0xE8);
+    let inputs = [key(mask, false), key(mask, true)];
+    unsafe {
+        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
+pub fn send_ctrl_v() {
     let inputs = [
         key(VK_CONTROL, false),
         key(VK_V, false),
@@ -226,6 +245,95 @@ fn send_ctrl_v() {
     ];
     unsafe {
         SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
+// ───────────────────────────── 复制提示浮层 ─────────────────────────────
+
+/// 浮层窗口：不抢焦点、不在任务栏和 Alt+Tab 里出现、没有系统画的圆角边框
+/// （窗口本身透明，胶囊和阴影都是自己画的）
+pub fn make_overlay(raw: isize) {
+    use windows::Win32::Graphics::Dwm::DWMWCP_DONOTROUND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        WS_EX_TOPMOST,
+    };
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd(raw), GWL_EXSTYLE);
+        let extra = (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST).0 as isize;
+        SetWindowLongPtrW(hwnd(raw), GWL_EXSTYLE, style | extra);
+        let pref = DWMWCP_DONOTROUND;
+        let _ = DwmSetWindowAttribute(
+            hwnd(raw),
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &pref as *const _ as *const _,
+            std::mem::size_of_val(&pref) as u32,
+        );
+        // Windows 11 给窗口画的 1px 边框也去掉（DWMWA_COLOR_NONE）
+        let none: u32 = 0xFFFF_FFFE;
+        let _ = DwmSetWindowAttribute(
+            hwnd(raw),
+            windows::Win32::Graphics::Dwm::DWMWA_BORDER_COLOR,
+            &none as *const _ as *const _,
+            std::mem::size_of_val(&none) as u32,
+        );
+    }
+}
+
+/// 不激活地显示在最上层
+pub fn show_no_activate(raw: isize) {
+    use windows::Win32::UI::WindowsAndMessaging::{SWP_NOMOVE, SWP_SHOWWINDOW};
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd(raw),
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+    }
+}
+
+/// 放到当前前台窗口所在显示器的底部中间（任务栏上方）
+pub fn place_bottom_center(raw: isize) {
+    use windows::Win32::Graphics::Gdi::MonitorFromWindow;
+    use windows::Win32::UI::HiDpi::GetDpiForWindow;
+    unsafe {
+        let fg = GetForegroundWindow();
+        let monitor = if fg.is_invalid() {
+            let mut cursor = POINT::default();
+            let _ = GetCursorPos(&mut cursor);
+            MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST)
+        } else {
+            MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST)
+        };
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return;
+        }
+        let mut rect = RECT::default();
+        if GetWindowRect(hwnd(raw), &mut rect).is_err() {
+            return;
+        }
+        let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
+        let scale = GetDpiForWindow(hwnd(raw)).max(96) as f32 / 96.0;
+        let work = info.rcWork;
+        let x = work.left + (work.right - work.left - w) / 2;
+        let y = work.bottom - h - (40.0 * scale) as i32;
+        let _ = SetWindowPos(
+            hwnd(raw),
+            Some(HWND_TOPMOST),
+            x,
+            y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOACTIVATE,
+        );
     }
 }
 

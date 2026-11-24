@@ -16,6 +16,7 @@ mod win;
 mod action_menu;
 mod design;
 mod settings;
+mod toast;
 mod ui;
 
 use std::path::{Path, PathBuf};
@@ -62,8 +63,12 @@ pub enum AppCommand {
     Toggle(Instant),
     /// 托盘、再次启动：只显示（已经显示就保持）
     Show(Instant),
-    /// 采集线程写入了新内容
-    ClipboardChanged,
+    /// 采集线程写入了新内容。`notify`：是用户自己复制的（不是 Tessel 写回的），要提示"已复制"
+    ClipboardChanged {
+        notify: bool,
+    },
+    /// 粘贴队列热键：粘贴队列里的下一条
+    PasteNext,
     /// 配置文件被修改
     ConfigChanged,
     ResetPosition,
@@ -212,85 +217,173 @@ fn watch_config(path: PathBuf, tx: async_channel::Sender<AppCommand>) {
         .ok();
 }
 
-/// 全局热键：按配置注册，配置变化时换绑
-struct Hotkeys {
-    manager: GlobalHotKeyManager,
+/// 全局热键的用途
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HotkeyRole {
+    /// 唤起弹窗
+    Popup,
+    /// 粘贴队列的下一条
+    Queue,
+}
+
+impl HotkeyRole {
+    const ALL: [HotkeyRole; 2] = [HotkeyRole::Popup, HotkeyRole::Queue];
+
+    fn spec(self, config: &Config) -> &str {
+        match self {
+            HotkeyRole::Popup => &config.hotkey,
+            HotkeyRole::Queue => &config.queue_hotkey,
+        }
+    }
+
+    fn set_spec(self, config: &mut Config, spec: String) {
+        match self {
+            HotkeyRole::Popup => config.hotkey = spec,
+            HotkeyRole::Queue => config.queue_hotkey = spec,
+        }
+    }
+
+    /// 错误提示的前缀
+    fn label(self) -> &'static str {
+        match self {
+            HotkeyRole::Popup => "",
+            HotkeyRole::Queue => "粘贴队列的",
+        }
+    }
+}
+
+/// 一个全局热键的注册状态
+#[derive(Default)]
+struct HotkeySlot {
     /// 当前已注册的热键及其文字形式
     current: Option<(HotKey, String)>,
     /// 给热键回调用的当前热键 id（回调在其他上下文里执行，不能直接访问 `current`）
     active_id: Arc<AtomicU32>,
-    /// 设置窗口正在录制新热键：期间不注册任何热键
-    recording: bool,
     /// 录制前的热键，录制结束时新热键注册失败就恢复它
     suspended: Option<(HotKey, String)>,
 }
 
+/// 全局热键（唤起弹窗、粘贴队列）：按配置注册，配置变化时换绑
+struct Hotkeys {
+    manager: GlobalHotKeyManager,
+    popup: HotkeySlot,
+    queue: HotkeySlot,
+    /// 设置窗口正在录制新热键：期间不注册任何热键
+    recording: bool,
+}
+
 impl Hotkeys {
+    fn slot(&self, role: HotkeyRole) -> &HotkeySlot {
+        match role {
+            HotkeyRole::Popup => &self.popup,
+            HotkeyRole::Queue => &self.queue,
+        }
+    }
+
+    fn slot_mut(&mut self, role: HotkeyRole) -> &mut HotkeySlot {
+        match role {
+            HotkeyRole::Popup => &mut self.popup,
+            HotkeyRole::Queue => &mut self.queue,
+        }
+    }
+
     /// 实际生效的热键（录制期间返回录制前的那个）
-    fn active_spec(&self) -> Option<&str> {
-        self.current
+    fn active_spec(&self, role: HotkeyRole) -> Option<&str> {
+        let slot = self.slot(role);
+        slot.current
             .as_ref()
-            .or(self.suspended.as_ref())
+            .or(slot.suspended.as_ref())
             .map(|(_, spec)| spec.as_str())
     }
 
-    /// 开始录制：暂时注销当前热键，否则按下它会被系统截走
+    /// 开始录制：暂时注销所有热键，否则按下它们会被系统截走
     fn suspend(&mut self) {
         if self.recording {
             return;
         }
         self.recording = true;
-        self.suspended = self.current.take();
-        if let Some((hotkey, _)) = &self.suspended {
-            let _ = self.manager.unregister(*hotkey);
+        for role in HotkeyRole::ALL {
+            let slot = self.slot_mut(role);
+            slot.suspended = slot.current.take();
+            slot.active_id.store(0, Ordering::Relaxed);
+            if let Some((hotkey, _)) = self.slot(role).suspended {
+                let _ = self.manager.unregister(hotkey);
+            }
         }
-        self.active_id.store(0, Ordering::Relaxed);
     }
 
-    /// 结束录制并注册 `spec`；失败时恢复录制前的热键，返回给用户看的说明
-    fn resume(&mut self, spec: &str) -> Result<(), String> {
+    /// 结束录制并按 `config` 注册；某个热键失败时恢复它录制前的值，返回失败的热键和说明
+    fn resume(&mut self, config: &Config) -> Vec<(HotkeyRole, String)> {
         self.recording = false;
-        let previous = self.suspended.take();
-        let result = self.register(spec);
-        if result.is_err()
-            && let Some((hotkey, old_spec)) = previous
-            && self.manager.register(hotkey).is_ok()
-        {
-            self.set_current(hotkey, old_spec);
+        let mut errors = Vec::new();
+        for role in HotkeyRole::ALL {
+            let previous = self.slot_mut(role).suspended.take();
+            if let Err(err) = self.register(role, role.spec(config)) {
+                if let Some((hotkey, old_spec)) = previous
+                    && self.manager.register(hotkey).is_ok()
+                {
+                    self.set_current(role, hotkey, old_spec);
+                }
+                errors.push((role, err));
+            }
         }
-        result
+        errors
     }
 
-    /// 配置重载、启动时调用。录制期间什么都不做，由录制结束时的 `resume` 统一处理。
-    fn apply(&mut self, spec: &str) -> Result<(), String> {
+    /// 配置重载、启动时调用，返回注册失败的说明。
+    /// 录制期间什么都不做，由录制结束时的 `resume` 统一处理。
+    fn apply(&mut self, config: &Config) -> Option<String> {
         if self.recording {
+            return None;
+        }
+        let errors: Vec<String> = HotkeyRole::ALL
+            .into_iter()
+            .filter_map(|role| {
+                let err = self.register(role, role.spec(config)).err()?;
+                Some(match self.active_spec(role) {
+                    Some(active) => format!("{err}，当前仍使用「{active}」"),
+                    None => format!("{err}，请在设置里换一个"),
+                })
+            })
+            .collect();
+        (!errors.is_empty()).then(|| errors.join("；"))
+    }
+
+    fn register(&mut self, role: HotkeyRole, spec: &str) -> Result<(), String> {
+        // 粘贴队列的热键可以留空（不使用）
+        if spec.is_empty() && role == HotkeyRole::Queue {
+            let slot = self.slot_mut(role);
+            slot.active_id.store(0, Ordering::Relaxed);
+            if let Some((old, _)) = slot.current.take() {
+                let _ = self.manager.unregister(old);
+            }
             return Ok(());
         }
-        self.register(spec).map_err(|err| match self.active_spec() {
-            Some(active) => format!("{err}，当前仍使用「{active}」"),
-            None => format!("{err}，请在设置里换一个"),
-        })
-    }
-
-    fn register(&mut self, spec: &str) -> Result<(), String> {
-        let hotkey = parse_hotkey(spec)?;
-        if self.current.as_ref().is_some_and(|(h, _)| *h == hotkey) {
+        let prefix = role.label();
+        let hotkey = parse_hotkey(spec).map_err(|e| format!("{prefix}{e}"))?;
+        if self
+            .slot(role)
+            .current
+            .as_ref()
+            .is_some_and(|(h, _)| *h == hotkey)
+        {
             return Ok(());
         }
         // 先注册新的，成功后再注销旧的：新热键被占用时旧热键继续可用
         self.manager
             .register(hotkey)
-            .map_err(|_| format!("热键「{spec}」已被其他程序占用"))?;
-        if let Some((old, _)) = self.current.take() {
+            .map_err(|_| format!("{prefix}热键「{spec}」已被占用"))?;
+        if let Some((old, _)) = self.slot_mut(role).current.take() {
             let _ = self.manager.unregister(old);
         }
-        self.set_current(hotkey, spec.to_string());
+        self.set_current(role, hotkey, spec.to_string());
         Ok(())
     }
 
-    fn set_current(&mut self, hotkey: HotKey, spec: String) {
-        self.active_id.store(hotkey.id(), Ordering::Relaxed);
-        self.current = Some((hotkey, spec));
+    fn set_current(&mut self, role: HotkeyRole, hotkey: HotKey, spec: String) {
+        let slot = self.slot_mut(role);
+        slot.active_id.store(hotkey.id(), Ordering::Relaxed);
+        slot.current = Some((hotkey, spec));
     }
 }
 
@@ -383,6 +476,7 @@ fn main() {
                         Payload::Image { .. } => "图片",
                     };
                     let source = clip.source.clone().unwrap_or_default();
+                    let notify = !clip.from_self;
                     let rich = if clip.rich.is_empty() {
                         ""
                     } else {
@@ -395,7 +489,7 @@ fn main() {
                     match store.record(clip) {
                         Ok(Some(seq)) => {
                             debug_log(format!("[capture] {kind}{rich} · {source} · seq={seq}"));
-                            let _ = tx.try_send(AppCommand::ClipboardChanged);
+                            let _ = tx.try_send(AppCommand::ClipboardChanged { notify });
                         }
                         Ok(None) => {}
                         Err(err) => log_line(format!("[capture] 写入失败：{err}")),
@@ -437,24 +531,29 @@ fn main() {
             // 全局热键：global-hotkey 在当前线程创建隐藏窗口接收 WM_HOTKEY，由 GPUI 的消息循环派发
             let mut hotkeys = Hotkeys {
                 manager: GlobalHotKeyManager::new().expect("hotkey manager"),
-                current: None,
-                active_id: Arc::new(AtomicU32::new(0)),
+                popup: HotkeySlot::default(),
+                queue: HotkeySlot::default(),
                 recording: false,
-                suspended: None,
             };
             let mut startup_error = config_error;
-            if let Err(err) = hotkeys.apply(&config.hotkey) {
+            if let Some(err) = hotkeys.apply(&config) {
                 log_line(format!("[warn] {err}"));
                 startup_error.get_or_insert(err);
             }
             let hotkey_tx = tx.clone();
-            let active_id = hotkeys.active_id.clone();
+            let popup_id = hotkeys.popup.active_id.clone();
+            let queue_id = hotkeys.queue.active_id.clone();
             GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
                 debug_log(format!("[hotkey] 回调 state={:?}", event.state));
-                if event.id == active_id.load(Ordering::Relaxed)
-                    && event.state == HotKeyState::Pressed
-                {
+                if event.state != HotKeyState::Pressed {
+                    return;
+                }
+                if event.id == popup_id.load(Ordering::Relaxed) {
                     let _ = hotkey_tx.try_send(AppCommand::Toggle(Instant::now()));
+                } else if event.id == queue_id.load(Ordering::Relaxed) {
+                    // 尽快发一个占位键：用户松开 Alt / Shift 时不会激活菜单栏、切换输入法中英文
+                    win::send_mask_key();
+                    let _ = hotkey_tx.try_send(AppCommand::PasteNext);
                 }
             }));
 
@@ -466,7 +565,11 @@ fn main() {
                     (None, None)
                 }
             };
-            update_tray_hotkey(tray.as_ref(), tray_items.as_ref(), hotkeys.active_spec());
+            update_tray_hotkey(
+                tray.as_ref(),
+                tray_items.as_ref(),
+                hotkeys.active_spec(HotkeyRole::Popup),
+            );
 
             let kind = match std::env::var("TESSEL_KIND").as_deref() {
                 Ok("normal") => WindowKind::Normal,
@@ -530,6 +633,10 @@ fn main() {
             if let Some(err) = startup_error {
                 popup.update(cx, |this, cx| this.set_config_error(err, cx));
             }
+            // 复制提示（独立的小窗口，不抢焦点）
+            if let Some(toast) = toast::open(cx) {
+                popup.update(cx, |this, _| this.set_toast(toast));
+            }
 
             let (ws, private) = win::memory_mb();
             log_line(format!(
@@ -566,7 +673,7 @@ fn main() {
                             let warning = result
                                 .as_ref()
                                 .ok()
-                                .and_then(|new| hotkeys.apply(&new.hotkey).err());
+                                .and_then(|new| hotkeys.apply(new));
                             if let Some(w) = &warning {
                                 log_line(format!("[config] {w}"));
                             }
@@ -579,7 +686,11 @@ fn main() {
                                 }
                                 Err(err) => log_line(format!("[config] {err}")),
                             }
-                            update_tray_hotkey(tray.as_ref(), tray_items.as_ref(), hotkeys.active_spec());
+                            update_tray_hotkey(
+                                tray.as_ref(),
+                                tray_items.as_ref(),
+                                hotkeys.active_spec(HotkeyRole::Popup),
+                            );
                             // 文件有错时整体不生效：说清楚之前的设置仍然有效
                             let result = result.map_err(|err| format!("{err}（之前的设置仍然有效）"));
                             if let Some((handle, view)) = &live_settings {
@@ -660,33 +771,50 @@ fn main() {
                         AppCommand::HotkeyRecording(true) => hotkeys.suspend(),
                         AppCommand::HotkeyRecording(false) => {
                             // 录制期间收到的 ConfigChanged 已经把新热键写进 shared_config
-                            let spec = shared_config
+                            let config = shared_config
                                 .read()
-                                .map(|c| c.hotkey.clone())
+                                .map(|c| c.clone())
                                 .unwrap_or_default();
-                            if let Err(err) = hotkeys.resume(&spec) {
-                                log_line(format!("[warn] {err}"));
-                                // 新热键没注册上：把配置文件改回实际生效的热键，避免下次启动时没有热键
-                                if let Some(active) = hotkeys.active_spec().map(str::to_string)
-                                    && let Ok(mut config) = Config::load_or_create(&dir)
-                                    && config.hotkey != active
-                                {
-                                    config.hotkey = active.clone();
-                                    if config.save(&dir).is_ok()
-                                        && let Ok(mut shared) = shared_config.write()
-                                    {
-                                        *shared = config.clone();
-                                    }
-                                    if let Some((_, view)) = &live_settings {
-                                        let notice = format!("{err}，已恢复为「{active}」");
-                                        view.update(cx, |this, cx| {
-                                            this.on_config_result(Ok(config), None, cx);
-                                            this.set_notice(notice, cx);
-                                        });
+                            let errors = hotkeys.resume(&config);
+                            // 新热键没注册上：把配置文件改回实际生效的热键，避免下次启动时没有热键
+                            if !errors.is_empty()
+                                && let Ok(mut file) = Config::load_or_create(&dir)
+                            {
+                                let mut notices = Vec::new();
+                                for (role, err) in &errors {
+                                    log_line(format!("[warn] {err}"));
+                                    let active = hotkeys
+                                        .active_spec(*role)
+                                        .unwrap_or_default()
+                                        .to_string();
+                                    notices.push(if active.is_empty() {
+                                        err.clone()
+                                    } else {
+                                        format!("{err}，已恢复为「{active}」")
+                                    });
+                                    // 唤起热键没有可恢复的旧值时保留配置里的写法，下次启动再试
+                                    if !active.is_empty() || *role == HotkeyRole::Queue {
+                                        role.set_spec(&mut file, active);
                                     }
                                 }
+                                if file.save(&dir).is_ok()
+                                    && let Ok(mut shared) = shared_config.write()
+                                {
+                                    *shared = file.clone();
+                                }
+                                if let Some((_, view)) = &live_settings {
+                                    let notice = notices.join("；");
+                                    view.update(cx, |this, cx| {
+                                        this.on_config_result(Ok(file), None, cx);
+                                        this.set_notice(notice, cx);
+                                    });
+                                }
                             }
-                            update_tray_hotkey(tray.as_ref(), tray_items.as_ref(), hotkeys.active_spec());
+                            update_tray_hotkey(
+                                tray.as_ref(),
+                                tray_items.as_ref(),
+                                hotkeys.active_spec(HotkeyRole::Popup),
+                            );
                         }
                         AppCommand::PauseToggled => {
                             if let Some(items) = &tray_items {
@@ -710,7 +838,10 @@ fn main() {
                                 popup.update(cx, |this, cx| match cmd {
                                     AppCommand::Toggle(t0) => this.toggle(t0, window, cx),
                                     AppCommand::Show(t0) => this.show_if_hidden(t0, window, cx),
-                                    AppCommand::ClipboardChanged => this.on_clipboard_changed(cx),
+                                    AppCommand::ClipboardChanged { notify } => {
+                                        this.on_clipboard_changed(notify, cx)
+                                    }
+                                    AppCommand::PasteNext => this.paste_next(cx),
                                     AppCommand::ResetPosition => this.reset_position(),
                                     _ => {}
                                 });
