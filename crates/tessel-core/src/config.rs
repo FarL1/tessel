@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::i18n::{LanguagePref, tr};
+use crate::trf;
+
 pub const FILE_NAME: &str = "config.toml";
 
 /// 首次运行时写出的默认配置（带注释，方便用户直接编辑）
@@ -31,6 +34,9 @@ copy_toast = true
 
 # 外观："system"（跟随系统）、"light"、"dark"
 theme = "system"
+
+# 界面语言："system"（跟随 Windows 显示语言）、"zh"（简体中文）、"en"（English）
+language = "system"
 
 # 不记录这些应用复制的内容（按 exe 文件名匹配，不区分大小写）
 # 默认包含常见的密码管理器；它们大多已经设置了系统隐私标记，这里是双保险。
@@ -69,9 +75,9 @@ impl ThemePref {
 
     pub fn label(self) -> &'static str {
         match self {
-            ThemePref::System => "跟随系统",
-            ThemePref::Light => "浅色",
-            ThemePref::Dark => "深色",
+            ThemePref::System => tr("跟随系统", "System"),
+            ThemePref::Light => tr("浅色", "Light"),
+            ThemePref::Dark => tr("深色", "Dark"),
         }
     }
 }
@@ -85,6 +91,7 @@ pub struct Config {
     pub auto_paste: bool,
     pub copy_toast: bool,
     pub theme: ThemePref,
+    pub language: LanguagePref,
     pub ignored_apps: Vec<String>,
 }
 
@@ -98,6 +105,7 @@ impl Default for Config {
             auto_paste: true,
             copy_toast: true,
             theme: ThemePref::System,
+            language: LanguagePref::System,
             ignored_apps: [
                 "KeePass.exe",
                 "KeePassXC.exe",
@@ -124,9 +132,15 @@ impl Config {
     pub fn load_or_create(data_dir: &Path) -> Result<Config, String> {
         let path = Self::path(data_dir);
         if !path.exists() {
-            std::fs::write(&path, DEFAULT_FILE).map_err(|e| format!("无法创建配置文件：{e}"))?;
+            std::fs::write(&path, DEFAULT_FILE).map_err(|e| {
+                trf!(
+                    "无法创建配置文件：{e}",
+                    "Cannot create the config file: {e}"
+                )
+            })?;
         }
-        let text = std::fs::read_to_string(&path).map_err(|e| format!("无法读取配置文件：{e}"))?;
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| trf!("无法读取配置文件：{e}", "Cannot read the config file: {e}"))?;
         Self::parse(&text)
     }
 
@@ -136,12 +150,16 @@ impl Config {
                 .span()
                 .map(|span| text[..span.start.min(text.len())].matches('\n').count() + 1);
             match line {
-                Some(line) => format!("config.toml 第 {line} 行有误：{}", e.message()),
-                None => format!("config.toml 有误：{}", e.message()),
+                Some(line) => trf!(
+                    "config.toml 第 {line} 行有误：{}",
+                    "config.toml line {line}: {}",
+                    e.message()
+                ),
+                None => trf!("config.toml 有误：{}", "config.toml: {}", e.message()),
             }
         })?;
         if config.max_items < 10 {
-            return Err("max_items 至少为 10".into());
+            return Err(tr("max_items 至少为 10", "max_items must be at least 10").into());
         }
         config.hotkey = config.hotkey.trim().to_string();
         config.queue_hotkey = config.queue_hotkey.trim().to_string();
@@ -159,11 +177,20 @@ impl Config {
         let existing = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => DEFAULT_FILE.into(),
-            Err(e) => return Err(format!("无法读取配置文件：{e}")),
+            Err(e) => {
+                return Err(trf!(
+                    "无法读取配置文件：{e}",
+                    "Cannot read the config file: {e}"
+                ));
+            }
         };
-        let mut doc: DocumentMut = existing
-            .parse()
-            .map_err(|_| "config.toml 有语法错误，请先修正后再保存".to_string())?;
+        let mut doc: DocumentMut = existing.parse().map_err(|_| {
+            tr(
+                "config.toml 有语法错误，请先修正后再保存",
+                "config.toml has a syntax error; fix it before saving",
+            )
+            .to_string()
+        })?;
 
         doc["hotkey"] = value(self.hotkey.as_str());
         doc["queue_hotkey"] = value(self.queue_hotkey.as_str());
@@ -171,6 +198,7 @@ impl Config {
         doc["max_items"] = value(self.max_items as i64);
         doc["auto_paste"] = value(self.auto_paste);
         doc["theme"] = value(self.theme.as_str());
+        doc["language"] = value(self.language.as_str());
         let mut apps = Array::new();
         for app in &self.ignored_apps {
             apps.push(app.as_str());
@@ -183,8 +211,10 @@ impl Config {
         doc["ignored_apps"] = value(apps);
 
         let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, doc.to_string()).map_err(|e| format!("无法写入配置文件：{e}"))?;
-        std::fs::rename(&tmp, &path).map_err(|e| format!("无法写入配置文件：{e}"))
+        let write_err =
+            |e: std::io::Error| trf!("无法写入配置文件：{e}", "Cannot write the config file: {e}");
+        std::fs::write(&tmp, doc.to_string()).map_err(write_err)?;
+        std::fs::rename(&tmp, &path).map_err(write_err)
     }
 
     /// `exe_path` 可以是完整路径或文件名
@@ -231,6 +261,7 @@ mod tests {
         c.copy_toast = false;
         c.queue_hotkey = String::new();
         c.theme = ThemePref::Dark;
+        c.language = LanguagePref::En;
         c.ignored_apps = vec!["KeePassXC.exe".into(), "微信.exe".into()];
         c.save(&dir).unwrap();
 

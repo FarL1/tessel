@@ -10,6 +10,8 @@ use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::{ActiveTheme, Icon, Sizable};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
+use tessel_core::i18n::tr;
+use tessel_core::trf;
 use tessel_core::{Clip, Kind};
 
 use crate::design::{Palette, parse_hex_color};
@@ -66,7 +68,7 @@ impl Notice {
 
     /// "已复制"：类型 + 内容摘要
     pub fn copied(clip: &Clip) -> Self {
-        let mut notice = Self::new(Tone::Success, IconName::Check, "已复制")
+        let mut notice = Self::new(Tone::Success, IconName::Check, tr("已复制", "Copied"))
             .tag(clip.kind.label())
             .detail(summary(clip));
         if clip.kind == Kind::Color {
@@ -92,7 +94,7 @@ pub fn summary(clip: &Clip) -> String {
                 .map(|p| tessel_core::model::file_name(p))
                 .unwrap_or_default();
             if files.len() > 1 {
-                format!("{first} 等 {} 个文件", files.len())
+                trf!("{first} 等 {} 个文件", "{first} · {} files", files.len())
             } else {
                 first.to_string()
             }
@@ -110,7 +112,7 @@ pub fn summary(clip: &Clip) -> String {
                 s.push('…');
             }
             if lines > 1 {
-                format!("{s}  · {lines} 行")
+                trf!("{s}  · {lines} 行", "{s}  · {lines} lines")
             } else {
                 s
             }

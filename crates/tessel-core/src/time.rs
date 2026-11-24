@@ -2,6 +2,9 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::i18n::tr;
+use crate::trf;
+
 pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -17,20 +20,24 @@ pub fn relative(ts_ms: i64, now_ms: i64) -> String {
     let diff = (now_ms - ts_ms).max(0);
     let minutes = diff / 60_000;
     if minutes < 1 {
-        return "刚刚".into();
+        return tr("刚刚", "just now").into();
     }
     if minutes < 60 {
-        return format!("{minutes} 分钟前");
+        return trf!("{minutes} 分钟前", "{minutes} min ago");
     }
     let day_now = (now_ms + TZ_OFFSET_MS).div_euclid(DAY_MS);
     let day_ts = (ts_ms + TZ_OFFSET_MS).div_euclid(DAY_MS);
     match day_now - day_ts {
-        0 => format!("{} 小时前", minutes / 60),
-        1 => "昨天".into(),
-        d @ 2..=6 => format!("{d} 天前"),
+        0 => trf!("{} 小时前", "{} h ago", minutes / 60),
+        1 => tr("昨天", "yesterday").into(),
+        d @ 2..=6 => trf!("{d} 天前", "{d} days ago"),
         _ => {
+            const MONTHS: [&str; 12] = [
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+            ];
             let (_, m, d) = civil_from_days(day_ts);
-            format!("{m} 月 {d} 日")
+            let month = MONTHS[m as usize - 1];
+            trf!("{m} 月 {d} 日", "{month} {d}")
         }
     }
 }

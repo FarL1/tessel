@@ -1,5 +1,8 @@
 use std::path::PathBuf;
 
+use crate::i18n::tr;
+use crate::trf;
+
 /// 内容类型。存储时用 `as_str()` 的值，改名时注意兼容旧数据。
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Kind {
@@ -45,12 +48,24 @@ impl Kind {
 
     pub fn label(self) -> &'static str {
         match self {
-            Kind::Text => "文本",
-            Kind::Link => "链接",
-            Kind::Code => "代码",
-            Kind::Color => "颜色",
-            Kind::Image => "图片",
-            Kind::File => "文件",
+            Kind::Text => tr("文本", "Text"),
+            Kind::Link => tr("链接", "Link"),
+            Kind::Code => tr("代码", "Code"),
+            Kind::Color => tr("颜色", "Color"),
+            Kind::Image => tr("图片", "Image"),
+            Kind::File => tr("文件", "File"),
+        }
+    }
+
+    /// 分类标签上的名字（英文用复数）
+    pub fn category_label(self) -> &'static str {
+        match self {
+            Kind::Text => tr("文本", "Text"),
+            Kind::Link => tr("链接", "Links"),
+            Kind::Code => tr("代码", "Code"),
+            Kind::Color => tr("颜色", "Colors"),
+            Kind::Image => tr("图片", "Images"),
+            Kind::File => tr("文件", "Files"),
         }
     }
 }
@@ -77,9 +92,9 @@ impl Filter {
 
     pub fn label(self) -> &'static str {
         match self {
-            Filter::All => "全部",
-            Filter::Kind(k) => k.label(),
-            Filter::Pinned => "收藏",
+            Filter::All => tr("全部", "All"),
+            Filter::Kind(k) => k.category_label(),
+            Filter::Pinned => tr("收藏", "Pinned"),
         }
     }
 }
@@ -176,14 +191,16 @@ impl Clip {
                     .unwrap_or_default()
                     .to_string();
                 if files.len() > 1 {
-                    format!("{first} 等 {} 个文件", files.len())
+                    let n = files.len();
+                    let more = n - 1;
+                    trf!("{first} 等 {n} 个文件", "{first} and {more} more")
                 } else {
                     first
                 }
             }
             Kind::Image => match &self.image {
-                Some(img) => format!("图片 {} × {}", img.width, img.height),
-                None => "图片".to_string(),
+                Some(img) => trf!("图片 {} × {}", "Image {} × {}", img.width, img.height),
+                None => tr("图片", "Image").to_string(),
             },
             _ => self
                 .content

@@ -28,7 +28,8 @@ use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use gpui_kit::*;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use tessel_core::{Config, Payload, Store};
+use tessel_core::i18n::{self, tr};
+use tessel_core::{Config, Payload, Store, trf};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{MouseButton as TrayButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
@@ -110,7 +111,7 @@ fn parse_hotkey(s: &str) -> Result<HotKey, String> {
     normalized
         .join("+")
         .parse::<HotKey>()
-        .map_err(|e| format!("热键「{s}」格式不对：{e}"))
+        .map_err(|e| trf!("热键「{s}」格式不对：{e}", "Invalid hotkey \"{s}\": {e}"))
 }
 
 /// 设置窗口的句柄和视图（弱引用：窗口关闭后视图被释放）
@@ -121,6 +122,38 @@ struct TrayItems {
     show: MenuItem,
     pause: CheckMenuItem,
     autostart: CheckMenuItem,
+    settings: MenuItem,
+    reset: MenuItem,
+    clear: MenuItem,
+    quit: MenuItem,
+}
+
+/// 托盘提示文字
+fn tray_tooltip(hotkey_label: &str) -> String {
+    trf!(
+        "{APP_NAME} {APP_NAME_ZH} · {hotkey_label} 唤起",
+        "{APP_NAME} clipboard manager · {hotkey_label} to open"
+    )
+}
+
+/// 托盘菜单的文字（启动时、切换语言时）
+fn set_tray_texts(items: &TrayItems, hotkey_label: &str) {
+    items.show.set_text(trf!(
+        "显示 Tessel\t{hotkey_label}",
+        "Show Tessel\t{hotkey_label}"
+    ));
+    items.pause.set_text(tr("暂停记录", "Pause recording"));
+    items
+        .autostart
+        .set_text(tr("开机自动启动", "Start with Windows"));
+    items.settings.set_text(tr("设置…", "Settings…"));
+    items
+        .reset
+        .set_text(tr("重置窗口位置", "Reset window position"));
+    items
+        .clear
+        .set_text(tr("清空历史（保留收藏）…", "Clear history (keep pinned)…"));
+    items.quit.set_text(tr("退出", "Quit"));
 }
 
 /// 托盘图标和菜单。对象析构时托盘图标会消失，所以要保存到进程结束。
@@ -128,13 +161,14 @@ fn build_tray(
     tx: async_channel::Sender<AppCommand>,
     hotkey_label: &str,
 ) -> Option<(tray_icon::TrayIcon, TrayItems)> {
-    let show = MenuItem::new(format!("显示 Tessel\t{hotkey_label}"), true, None);
-    let pause = CheckMenuItem::new("暂停记录", true, false, None);
-    let autostart = CheckMenuItem::new("开机自动启动", true, win::autostart_enabled(), None);
-    let settings = MenuItem::new("设置…", true, None);
-    let reset = MenuItem::new("重置窗口位置", true, None);
-    let clear = MenuItem::new("清空历史（保留收藏）…", true, None);
-    let quit = MenuItem::new("退出", true, None);
+    // 文字由 set_tray_texts 统一设置
+    let show = MenuItem::new("", true, None);
+    let pause = CheckMenuItem::new("", true, false, None);
+    let autostart = CheckMenuItem::new("", true, win::autostart_enabled(), None);
+    let settings = MenuItem::new("", true, None);
+    let reset = MenuItem::new("", true, None);
+    let clear = MenuItem::new("", true, None);
+    let quit = MenuItem::new("", true, None);
     let sep = PredefinedMenuItem::separator;
     let menu = Menu::new();
     menu.append_items(&[
@@ -181,19 +215,22 @@ fn build_tray(
     let icon = tray_icon::Icon::from_resource(1, Some((32, 32))).ok()?;
     let tray = TrayIconBuilder::new()
         .with_icon(icon)
-        .with_tooltip(format!("{APP_NAME} {APP_NAME_ZH} · {hotkey_label} 唤起"))
+        .with_tooltip(tray_tooltip(hotkey_label))
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
         .build()
         .ok()?;
-    Some((
-        tray,
-        TrayItems {
-            show,
-            pause,
-            autostart,
-        },
-    ))
+    let items = TrayItems {
+        show,
+        pause,
+        autostart,
+        settings,
+        reset,
+        clear,
+        quit,
+    };
+    set_tray_texts(&items, hotkey_label);
+    Some((tray, items))
 }
 
 /// 每秒检查一次配置文件的修改时间，变了就通知主线程重新加载
@@ -247,7 +284,7 @@ impl HotkeyRole {
     fn label(self) -> &'static str {
         match self {
             HotkeyRole::Popup => "",
-            HotkeyRole::Queue => "粘贴队列的",
+            HotkeyRole::Queue => tr("粘贴队列的", "Paste queue: "),
         }
     }
 }
@@ -341,8 +378,14 @@ impl Hotkeys {
             .filter_map(|role| {
                 let err = self.register(role, role.spec(config)).err()?;
                 Some(match self.active_spec(role) {
-                    Some(active) => format!("{err}，当前仍使用「{active}」"),
-                    None => format!("{err}，请在设置里换一个"),
+                    Some(active) => trf!(
+                        "{err}，当前仍使用「{active}」",
+                        "{err}; still using \"{active}\""
+                    ),
+                    None => trf!(
+                        "{err}，请在设置里换一个",
+                        "{err}; please choose another in Settings"
+                    ),
                 })
             })
             .collect();
@@ -370,9 +413,12 @@ impl Hotkeys {
             return Ok(());
         }
         // 先注册新的，成功后再注销旧的：新热键被占用时旧热键继续可用
-        self.manager
-            .register(hotkey)
-            .map_err(|_| format!("{prefix}热键「{spec}」已被占用"))?;
+        self.manager.register(hotkey).map_err(|_| {
+            trf!(
+                "{prefix}热键「{spec}」已被占用",
+                "{prefix}Hotkey \"{spec}\" is already in use"
+            )
+        })?;
         if let Some((old, _)) = self.slot_mut(role).current.take() {
             let _ = self.manager.unregister(old);
         }
@@ -393,12 +439,12 @@ fn update_tray_hotkey(
     items: Option<&TrayItems>,
     active: Option<&str>,
 ) {
-    let label = active.unwrap_or("未设置热键");
+    let label = active.unwrap_or(tr("未设置热键", "no hotkey"));
     if let Some(items) = items {
-        items.show.set_text(format!("显示 Tessel\t{label}"));
+        set_tray_texts(items, label);
     }
     if let Some(tray) = tray {
-        let _ = tray.set_tooltip(Some(format!("{APP_NAME} {APP_NAME_ZH} · {label} 唤起")));
+        let _ = tray.set_tooltip(Some(tray_tooltip(label)));
     }
 }
 
@@ -442,10 +488,20 @@ fn main() {
     log_line(format!("[store] 数据目录 {}", dir.display()));
 
     // 配置：读取失败时用默认值启动，并在界面上提示
+    // 界面语言：读配置之前先按系统语言（配置出错的提示也要能看懂）
+    let system_chinese = win::system_is_chinese();
+    i18n::set_english(tessel_core::LanguagePref::System.resolve(system_chinese));
     let (config, config_error) = match Config::load_or_create(&dir) {
         Ok(config) => (config, None),
-        Err(err) => (Config::default(), Some(format!("{err}（已使用默认设置）"))),
+        Err(err) => (
+            Config::default(),
+            Some(trf!(
+                "{err}（已使用默认设置）",
+                "{err} (using the default settings)"
+            )),
+        ),
     };
+    i18n::set_english(config.language.resolve(system_chinese));
     let shared_config = Arc::new(RwLock::new(config.clone()));
     watch_config(Config::path(&dir), tx.clone());
 
@@ -680,6 +736,7 @@ fn main() {
                             match &result {
                                 Ok(new) => {
                                     log_line(format!("[config] 已重新加载（热键 {}）", new.hotkey));
+                                    i18n::set_english(new.language.resolve(system_chinese));
                                     if let Ok(mut shared) = shared_config.write() {
                                         *shared = new.clone();
                                     }
@@ -692,7 +749,9 @@ fn main() {
                                 hotkeys.active_spec(HotkeyRole::Popup),
                             );
                             // 文件有错时整体不生效：说清楚之前的设置仍然有效
-                            let result = result.map_err(|err| format!("{err}（之前的设置仍然有效）"));
+                            let result = result.map_err(|err| {
+                                trf!("{err}（之前的设置仍然有效）", "{err} (the previous settings stay in effect)")
+                            });
                             if let Some((handle, view)) = &live_settings {
                                 let result = result.clone();
                                 let warning = warning.clone();
@@ -790,7 +849,10 @@ fn main() {
                                     notices.push(if active.is_empty() {
                                         err.clone()
                                     } else {
-                                        format!("{err}，已恢复为「{active}」")
+                                        trf!(
+                                            "{err}，已恢复为「{active}」",
+                                            "{err}; restored \"{active}\""
+                                        )
                                     });
                                     // 唤起热键没有可恢复的旧值时保留配置里的写法，下次启动再试
                                     if !active.is_empty() || *role == HotkeyRole::Queue {
@@ -824,8 +886,11 @@ fn main() {
                         }
                         AppCommand::ClearHistory => {
                             if win::confirm(
-                                "清空历史 · Tessel",
-                                "确定要清空所有未收藏的剪贴板历史吗？\n收藏的内容会保留。此操作无法撤销。",
+                                tr("清空历史 · Tessel", "Clear history · Tessel"),
+                                tr(
+                                    "确定要清空所有未收藏的剪贴板历史吗？\n收藏的内容会保留。此操作无法撤销。",
+                                    "Delete all clipboard history that isn't pinned?\nPinned items are kept. This can't be undone.",
+                                ),
                             ) {
                                 popup.update(cx, |this, cx| this.clear_history(cx));
                                 if let Some((_, view)) = &live_settings {

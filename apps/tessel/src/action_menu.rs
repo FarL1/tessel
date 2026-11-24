@@ -9,7 +9,9 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Icon, Sizable};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
+use tessel_core::i18n::tr;
 use tessel_core::transform::{self, Transform};
+use tessel_core::trf;
 use tessel_core::{Clip, Kind};
 
 use crate::design::{self, Palette};
@@ -166,7 +168,7 @@ fn summarize(output: &str) -> String {
         s.push('…');
     }
     if lines.len() > 1 {
-        s = format!("{} 行 · {s}", lines.len());
+        s = trf!("{} 行 · {s}", "{} lines · {s}", lines.len());
     }
     s
 }
@@ -186,47 +188,74 @@ impl ActionMenu {
     /// `queued`：这条在粘贴队列里的位置；`queue_len`：队列里一共几条
     pub fn new(clip: &Clip, queued: Option<usize>, queue_len: usize) -> Self {
         use MenuAction as A;
-        let paste = Entry::new(A::Paste, "粘贴", IconName::ClipboardPaste, Group::Paste)
-            .keys(&["↵"])
-            .keywords("paste");
+        let paste = Entry::new(
+            A::Paste,
+            tr("粘贴", "Paste"),
+            IconName::ClipboardPaste,
+            Group::Paste,
+        )
+        .keys(&["↵"])
+        .keywords("paste");
         let mut entries = vec![if clip.has_rich {
-            paste.detail("保留格式")
+            paste.detail(tr("保留格式", "Keeps formatting"))
         } else {
             paste
         }];
         if clip.has_rich {
             entries.push(
-                Entry::new(A::PastePlain, "粘贴为纯文本", IconName::Type, Group::Paste)
-                    .keys(&["Shift", "↵"])
-                    .keywords("plain text 格式"),
+                Entry::new(
+                    A::PastePlain,
+                    tr("粘贴为纯文本", "Paste as plain text"),
+                    IconName::Type,
+                    Group::Paste,
+                )
+                .keys(&["Shift", "↵"])
+                .keywords("plain text 格式"),
             );
         }
         entries.push(
             Entry::new(
                 A::CopyOnly,
-                "只复制，不粘贴",
+                tr("只复制，不粘贴", "Copy without pasting"),
                 IconName::ClipboardCopy,
                 Group::Paste,
             )
-            .detail("放到剪贴板，之后自己粘贴")
+            .detail(tr(
+                "放到剪贴板，之后自己粘贴",
+                "Puts it on the clipboard for you to paste",
+            ))
             .keywords("copy"),
         );
         if clip.kind == Kind::File {
             let n = clip.files().count();
             entries.push(
-                Entry::new(A::PastePaths, "粘贴文件路径", IconName::Type, Group::Paste)
-                    .detail(if n > 1 {
-                        format!("{} 个路径，每行一个", n)
-                    } else {
-                        clip.files().next().unwrap_or_default().to_string()
-                    })
-                    .keywords("path text"),
+                Entry::new(
+                    A::PastePaths,
+                    tr("粘贴文件路径", "Paste file paths"),
+                    IconName::Type,
+                    Group::Paste,
+                )
+                .detail(if n > 1 {
+                    trf!("{} 个路径，每行一个", "{} paths, one per line", n)
+                } else {
+                    clip.files().next().unwrap_or_default().to_string()
+                })
+                .keywords("path text"),
             );
         }
         let open = match clip.kind {
-            Kind::Link => Some(("在浏览器中打开", IconName::ExternalLink)),
-            Kind::File => Some(("在资源管理器中显示", IconName::FolderOpen)),
-            Kind::Image => Some(("用系统查看器打开", IconName::ExternalLink)),
+            Kind::Link => Some((
+                tr("在浏览器中打开", "Open in browser"),
+                IconName::ExternalLink,
+            )),
+            Kind::File => Some((
+                tr("在资源管理器中显示", "Show in File Explorer"),
+                IconName::FolderOpen,
+            )),
+            Kind::Image => Some((
+                tr("用系统查看器打开", "Open in default viewer"),
+                IconName::ExternalLink,
+            )),
             _ => None,
         };
         if let Some((label, icon)) = open {
@@ -260,26 +289,35 @@ impl ActionMenu {
 
         if !matches!(clip.kind, Kind::Image | Kind::File) {
             entries.push(
-                Entry::new(A::Edit, "编辑文本", IconName::SquarePen, Group::Manage)
-                    .detail("改完保存，替换这条记录")
-                    .keys(&["Ctrl", "E"])
-                    .keywords("edit modify 修改"),
+                Entry::new(
+                    A::Edit,
+                    tr("编辑文本", "Edit text"),
+                    IconName::SquarePen,
+                    Group::Manage,
+                )
+                .detail(tr("改完保存，替换这条记录", "Save to replace this item"))
+                .keys(&["Ctrl", "E"])
+                .keywords("edit modify 修改"),
             );
         }
         entries.push(
             Entry::new(
                 A::EditNote,
                 if clip.note.is_some() {
-                    "修改备注"
+                    tr("修改备注", "Edit note")
                 } else {
-                    "添加备注"
+                    tr("添加备注", "Add note")
                 },
                 IconName::StickyNote,
                 Group::Manage,
             )
             .detail(match &clip.note {
                 Some(note) => note.clone(),
-                None => "给这条起个名字，用 #标签 分类，之后搜得到".to_string(),
+                None => tr(
+                    "给这条起个名字，用 #标签 分类，之后搜得到",
+                    "Name it or group it with #tags to find it later",
+                )
+                .to_string(),
             })
             .keys(&["F2"])
             .keywords("note tag rename 备注 标签 重命名"),
@@ -288,19 +326,24 @@ impl ActionMenu {
             match queued {
                 Some(i) => Entry::new(
                     A::ToggleQueue,
-                    "移出粘贴队列",
+                    tr("移出粘贴队列", "Remove from paste queue"),
                     IconName::ListX,
                     Group::Manage,
                 )
-                .detail(format!("现在排在第 {} 条", i + 1)),
+                .detail(trf!(
+                    "现在排在第 {} 条",
+                    "Currently #{} in the queue",
+                    i + 1
+                )),
                 None => Entry::new(
                     A::ToggleQueue,
-                    "加入粘贴队列",
+                    tr("加入粘贴队列", "Add to paste queue"),
                     IconName::ListPlus,
                     Group::Manage,
                 )
-                .detail(format!(
+                .detail(trf!(
                     "排在第 {} 条，之后每按一次队列热键粘贴一条",
+                    "Becomes #{}; each press of the queue hotkey pastes the next one",
                     queue_len + 1
                 )),
             }
@@ -311,11 +354,11 @@ impl ActionMenu {
             entries.push(
                 Entry::new(
                     A::ClearQueue,
-                    "清空粘贴队列",
+                    tr("清空粘贴队列", "Clear paste queue"),
                     IconName::ListOrdered,
                     Group::Manage,
                 )
-                .detail(format!("队列里有 {queue_len} 条"))
+                .detail(trf!("队列里有 {queue_len} 条", "{queue_len} in the queue"))
                 .keywords("queue clear 队列"),
             );
         }
@@ -323,9 +366,9 @@ impl ActionMenu {
             Entry::new(
                 A::TogglePin,
                 if clip.pinned {
-                    "取消收藏"
+                    tr("取消收藏", "Unpin")
                 } else {
-                    "收藏"
+                    tr("收藏", "Pin")
                 },
                 if clip.pinned {
                     IconName::StarOff
@@ -338,9 +381,14 @@ impl ActionMenu {
             .keywords("pin star"),
         );
         entries.push(
-            Entry::new(A::Delete, "删除", IconName::Trash, Group::Manage)
-                .keys(&["Shift", "Del"])
-                .keywords("delete remove"),
+            Entry::new(
+                A::Delete,
+                tr("删除", "Delete"),
+                IconName::Trash,
+                Group::Manage,
+            )
+            .keys(&["Shift", "Del"])
+            .keywords("delete remove"),
         );
 
         let visible = (0..entries.len()).collect();
@@ -460,7 +508,7 @@ impl ActionMenu {
                     .text_center()
                     .text_xs()
                     .text_color(p.text_faint)
-                    .child("没有匹配的动作")
+                    .child(tr("没有匹配的动作", "No matching actions"))
                     .into_any_element(),
             );
         }
@@ -490,7 +538,7 @@ impl ActionMenu {
                     .text_xs()
                     .text_color(p.text_faint)
                     .child(Icon::new(IconName::Command).xsmall())
-                    .child(div().flex_none().child("动作"))
+                    .child(div().flex_none().child(tr("动作", "Actions")))
                     .child(div().flex_none().child("·"))
                     .child(div().min_w_0().truncate().child(self.title.clone())),
             )

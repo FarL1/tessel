@@ -4,6 +4,7 @@
 //! 输出统一用 `\n` 换行，写回剪贴板时由平台层转换。
 
 use crate::classify::parse_hex_rgba;
+use crate::i18n::tr;
 use crate::model::{Clip, Kind};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -38,34 +39,34 @@ impl Transform {
 
     pub fn label(self) -> &'static str {
         match self {
-            Transform::FormatJson => "格式化 JSON",
-            Transform::MinifyJson => "压缩 JSON",
-            Transform::StripTracking => "去掉链接追踪参数",
-            Transform::UrlDecode => "URL 解码",
-            Transform::ColorHex => "转为 HEX",
-            Transform::ColorRgb => "转为 RGB",
-            Transform::ColorHsl => "转为 HSL",
-            Transform::TidyWhitespace => "清理空白",
-            Transform::JoinLines => "合并为一行",
-            Transform::Uppercase => "转为大写",
-            Transform::Lowercase => "转为小写",
+            Transform::FormatJson => tr("格式化 JSON", "Format JSON"),
+            Transform::MinifyJson => tr("压缩 JSON", "Minify JSON"),
+            Transform::StripTracking => tr("去掉链接追踪参数", "Remove tracking parameters"),
+            Transform::UrlDecode => tr("URL 解码", "URL-decode"),
+            Transform::ColorHex => tr("转为 HEX", "Convert to HEX"),
+            Transform::ColorRgb => tr("转为 RGB", "Convert to RGB"),
+            Transform::ColorHsl => tr("转为 HSL", "Convert to HSL"),
+            Transform::TidyWhitespace => tr("清理空白", "Tidy whitespace"),
+            Transform::JoinLines => tr("合并为一行", "Join into one line"),
+            Transform::Uppercase => tr("转为大写", "UPPERCASE"),
+            Transform::Lowercase => tr("转为小写", "lowercase"),
         }
     }
 
     /// 在动作菜单里搜索时额外匹配的关键词
     pub fn keywords(self) -> &'static str {
         match self {
-            Transform::FormatJson => "json format pretty 美化",
+            Transform::FormatJson => "json format pretty 美化 格式化",
             Transform::MinifyJson => "json minify compact 一行",
-            Transform::StripTracking => "url link utm clean tracking 清理 跟踪",
+            Transform::StripTracking => "url link utm clean tracking remove 清理 跟踪 追踪",
             Transform::UrlDecode => "url decode percent 中文",
             Transform::ColorHex => "color hex 颜色",
             Transform::ColorRgb => "color rgb 颜色",
             Transform::ColorHsl => "color hsl 颜色",
-            Transform::TidyWhitespace => "trim whitespace 空格 空行",
-            Transform::JoinLines => "join lines pdf 换行",
-            Transform::Uppercase => "upper case 大小写",
-            Transform::Lowercase => "lower case 大小写",
+            Transform::TidyWhitespace => "trim whitespace tidy 空格 空行",
+            Transform::JoinLines => "join lines one line pdf 换行 合并",
+            Transform::Uppercase => "upper case uppercase 大小写 大写",
+            Transform::Lowercase => "lower case lowercase 大小写 小写",
         }
     }
 

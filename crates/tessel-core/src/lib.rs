@@ -4,6 +4,7 @@
 
 pub mod classify;
 pub mod config;
+pub mod i18n;
 pub mod model;
 pub mod pinyin_index;
 pub mod query;
@@ -12,6 +13,7 @@ pub mod time;
 pub mod transform;
 
 pub use config::{Config, ThemePref};
+pub use i18n::{LanguagePref, tr};
 pub use model::{Clip, Filter, ImageInfo, Kind, NewClip, Payload, RichFormats};
 pub use query::Query;
 pub use store::{Counts, Store};

@@ -13,7 +13,9 @@ use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, Theme, ThemeMode
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use tessel_clipboard::WriteContent;
+use tessel_core::i18n::tr;
 use tessel_core::time::{now_ms, relative as relative_time};
+use tessel_core::trf;
 use tessel_core::{Clip, Config, Counts, Filter, Kind, Query, Store, ThemePref};
 
 use crate::action_menu::{self, ActionMenu, MenuAction};
@@ -48,6 +50,24 @@ actions!(
 );
 
 const CONTEXT: &str = "ClipPopup";
+
+fn search_placeholder() -> &'static str {
+    tr(
+        "搜索剪贴板历史…   支持 app:微信  type:链接  -排除",
+        "Search clipboard history…   try app:chrome  type:link  -exclude",
+    )
+}
+
+fn menu_placeholder() -> &'static str {
+    tr("搜索动作…", "Search actions…")
+}
+
+fn note_placeholder() -> &'static str {
+    tr(
+        "写点备注，用 #标签 分类，例如：家里的地址 #常用",
+        "Add a note; group with #tags, e.g. Home address #frequent",
+    )
+}
 /// 编辑记录时预览区变成编辑框，键位上下文是 `ClipPopup > ClipEditor`
 const EDITOR_CONTEXT: &str = "ClipEditor";
 /// 备注输入框（F2）
@@ -169,16 +189,10 @@ impl Popup {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let search = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("搜索剪贴板历史…   支持 app:微信  type:链接  -排除")
-        });
-        let menu_search = cx.new(|cx| InputState::new(window, cx).placeholder("搜索动作…"));
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder(search_placeholder()));
+        let menu_search = cx.new(|cx| InputState::new(window, cx).placeholder(menu_placeholder()));
         let editor = cx.new(|cx| TextareaState::new(window, cx));
-        let note_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("写点备注，用 #标签 分类，例如：家里的地址 #常用")
-        });
+        let note_input = cx.new(|cx| InputState::new(window, cx).placeholder(note_placeholder()));
 
         let subscriptions = vec![
             cx.subscribe_in(&menu_search, window, |this, state, event, _window, cx| {
@@ -292,6 +306,14 @@ impl Popup {
         self.config = config;
         self.config_error = None;
         self.apply_theme(window, cx);
+        // 界面语言可能变了：输入框的占位文字是创建时设置的，要重新设置
+        for (input, text) in [
+            (&self.search, search_placeholder()),
+            (&self.menu_search, menu_placeholder()),
+            (&self.note_input, note_placeholder()),
+        ] {
+            input.update(cx, |state, cx| state.set_placeholder(text, window, cx));
+        }
         cx.notify();
     }
 
@@ -311,9 +333,9 @@ impl Popup {
         (self.on_pause_changed)(paused);
         self.set_status(
             if paused {
-                "已暂停记录"
+                tr("已暂停记录", "Recording paused")
             } else {
-                "已恢复记录"
+                tr("已恢复记录", "Recording resumed")
             }
             .into(),
             cx,
@@ -322,8 +344,11 @@ impl Popup {
 
     pub fn clear_history(&mut self, cx: &mut Context<Self>) {
         match self.store.clear_unpinned() {
-            Ok(n) => self.status = Some(format!("已清空 {n} 条历史").into()),
-            Err(err) => self.status = Some(format!("清空失败：{err}").into()),
+            Ok(n) => self.status = Some(trf!("已清空 {n} 条历史", "Cleared {n} items").into()),
+            Err(err) => {
+                self.status =
+                    Some(trf!("清空失败：{err}", "Could not clear the history: {err}").into())
+            }
         }
         self.selected = 0;
         self.refresh(cx);
@@ -501,15 +526,20 @@ impl Popup {
                 tessel_clipboard::write(owner, WriteContent::Files(clip.files().collect()))
             }
             Kind::Image => {
-                let path = &clip.image.as_ref().ok_or("图片文件丢失")?.path;
-                let png = std::fs::read(path).map_err(|e| format!("读取图片失败：{e}"))?;
+                let path = &clip
+                    .image
+                    .as_ref()
+                    .ok_or(tr("图片文件丢失", "Image file is missing"))?
+                    .path;
+                let png = std::fs::read(path)
+                    .map_err(|e| trf!("读取图片失败：{e}", "Could not read the image: {e}"))?;
                 tessel_clipboard::write(owner, WriteContent::ImagePng(&png))
             }
             _ if clip.has_rich && !plain => {
                 let rich = self
                     .store
                     .rich_formats(&clip.uuid)
-                    .map_err(|e| format!("读取格式失败：{e}"))?;
+                    .map_err(|e| trf!("读取格式失败：{e}", "Could not read the formatting: {e}"))?;
                 tessel_clipboard::write(
                     owner,
                     WriteContent::RichText {
@@ -556,7 +586,13 @@ impl Popup {
         match self.write_to_clipboard(&clip, false) {
             Ok(()) => self.hide(true, cx),
             Err(err) => {
-                self.status = Some(format!("写入剪贴板失败：{err}").into());
+                self.status = Some(
+                    trf!(
+                        "写入剪贴板失败：{err}",
+                        "Could not write to the clipboard: {err}"
+                    )
+                    .into(),
+                );
                 cx.notify();
             }
         }
@@ -571,7 +607,13 @@ impl Popup {
         cx: &mut Context<Self>,
     ) {
         if let Err(err) = written {
-            self.status = Some(format!("写入剪贴板失败：{err}").into());
+            self.status = Some(
+                trf!(
+                    "写入剪贴板失败：{err}",
+                    "Could not write to the clipboard: {err}"
+                )
+                .into(),
+            );
             cx.notify();
             return;
         }
@@ -581,7 +623,7 @@ impl Popup {
             return;
         }
         let Some(target) = self.prev_foreground.take() else {
-            self.status = Some("已复制到剪贴板".into());
+            self.status = Some(tr("已复制到剪贴板", "Copied to clipboard").into());
             cx.notify();
             return;
         };
@@ -609,9 +651,13 @@ impl Popup {
     /// 队列热键的文字（提示用）
     fn queue_hotkey_hint(&self) -> String {
         if self.config.queue_hotkey.is_empty() {
-            "先在设置里设定粘贴队列热键".into()
+            tr(
+                "先在设置里设定粘贴队列热键",
+                "set a paste-queue hotkey in Settings first",
+            )
+            .into()
         } else {
-            format!("{} 粘贴", self.config.queue_hotkey)
+            trf!("{} 粘贴", "{} to paste", self.config.queue_hotkey)
         }
     }
 
@@ -623,14 +669,19 @@ impl Popup {
         let status = if let Some(i) = self.queue.iter().position(|u| *u == clip.uuid) {
             self.queue.remove(i);
             if self.queue.is_empty() {
-                "已移出，粘贴队列空了".to_string()
+                tr("已移出，粘贴队列空了", "Removed; the paste queue is empty").to_string()
             } else {
-                format!("已移出粘贴队列 · 还有 {} 条", self.queue.len())
+                trf!(
+                    "已移出粘贴队列 · 还有 {} 条",
+                    "Removed from the queue · {} left",
+                    self.queue.len()
+                )
             }
         } else {
             self.queue.push_back(clip.uuid.clone());
-            format!(
+            trf!(
                 "已排队第 {} 条 · {}",
+                "Queued as #{} · {}",
                 self.queue.len(),
                 self.queue_hotkey_hint()
             )
@@ -641,7 +692,7 @@ impl Popup {
 
     fn clear_queue(&mut self, cx: &mut Context<Self>) {
         self.queue.clear();
-        self.status = Some("已清空粘贴队列".into());
+        self.status = Some(tr("已清空粘贴队列", "Paste queue cleared").into());
         cx.notify();
     }
 
@@ -670,8 +721,15 @@ impl Popup {
                         if win::modifiers_held() {
                             this.queue_requests = 0;
                             this.show_toast(
-                                Notice::new(Tone::Warning, Lucide::ListOrdered, "没有粘贴")
-                                    .detail("松开热键之后才会粘贴，请再按一次"),
+                                Notice::new(
+                                    Tone::Warning,
+                                    Lucide::ListOrdered,
+                                    tr("没有粘贴", "Not pasted"),
+                                )
+                                .detail(tr(
+                                    "松开热键之后才会粘贴，请再按一次",
+                                    "Release the hotkey to paste, then press it again",
+                                )),
                                 cx,
                             );
                         } else {
@@ -717,28 +775,42 @@ impl Popup {
                         if left == 0 { Tone::Success } else { Tone::Info },
                         Lucide::ListOrdered,
                         if left == 0 {
-                            "队列已全部粘贴"
+                            tr("队列已全部粘贴", "Queue finished")
                         } else {
-                            "已粘贴"
+                            tr("已粘贴", "Pasted")
                         },
                     )
                     .tag(if left == 0 {
-                        "最后一条".to_string()
+                        tr("最后一条", "last one").to_string()
                     } else {
-                        format!("还剩 {left} 条")
+                        trf!("还剩 {left} 条", "{left} left")
                     })
                     .detail(toast::summary(&clip))
                 }
-                Err(err) => Notice::new(Tone::Warning, Lucide::ListOrdered, "粘贴失败")
-                    .detail(format!("写入剪贴板失败：{err}")),
+                Err(err) => Notice::new(
+                    Tone::Warning,
+                    Lucide::ListOrdered,
+                    tr("粘贴失败", "Paste failed"),
+                )
+                .detail(trf!(
+                    "写入剪贴板失败：{err}",
+                    "Could not write to the clipboard: {err}"
+                )),
             };
             self.show_toast(notice, cx);
             cx.notify();
             return;
         }
         self.show_toast(
-            Notice::new(Tone::Warning, Lucide::ListOrdered, "粘贴队列是空的")
-                .detail("在 Tessel 里选中记录，按 Ctrl+Q 加入队列"),
+            Notice::new(
+                Tone::Warning,
+                Lucide::ListOrdered,
+                tr("粘贴队列是空的", "The paste queue is empty"),
+            )
+            .detail(tr(
+                "在 Tessel 里选中记录，按 Ctrl+Q 加入队列",
+                "Select an item in Tessel and press Ctrl+Q to queue it",
+            )),
             cx,
         );
     }
@@ -750,7 +822,7 @@ impl Popup {
             return;
         };
         if matches!(clip.kind, Kind::Image | Kind::File) {
-            self.status = Some("图片和文件不能编辑".into());
+            self.status = Some(tr("图片和文件不能编辑", "Images and files can't be edited").into());
             cx.notify();
             return;
         }
@@ -776,13 +848,19 @@ impl Popup {
             return;
         };
         let Ok(Some(original)) = self.store.get(&uuid) else {
-            self.status = Some("这条记录已经不存在了".into());
+            self.status = Some(tr("这条记录已经不存在了", "This item no longer exists").into());
             self.cancel_edit(window, cx);
             return;
         };
         let mut text = self.editor.read(cx).value().to_string();
         if text.trim().is_empty() {
-            self.status = Some("内容不能为空（要删除这条记录，请按 Esc 后再按 Shift+Del）".into());
+            self.status = Some(
+                tr(
+                    "内容不能为空（要删除这条记录，请按 Esc 后再按 Shift+Del）",
+                    "The content can't be empty (to delete the item, press Esc and then Shift+Del)",
+                )
+                .into(),
+            );
             cx.notify();
             return;
         }
@@ -792,14 +870,14 @@ impl Popup {
         }
         if text != original.content {
             match self.store.update_text(&uuid, &text) {
-                Ok(Some(_)) => self.status = Some("已保存修改".into()),
+                Ok(Some(_)) => self.status = Some(tr("已保存修改", "Changes saved").into()),
                 Ok(None) => {
-                    self.status = Some("这条记录不能修改".into());
+                    self.status = Some(tr("这条记录不能修改", "This item can't be edited").into());
                     cx.notify();
                     return;
                 }
                 Err(err) => {
-                    self.status = Some(format!("保存失败：{err}").into());
+                    self.status = Some(trf!("保存失败：{err}", "Could not save: {err}").into());
                     cx.notify();
                     return;
                 }
@@ -852,9 +930,9 @@ impl Popup {
         let note = self.note_input.read(cx).value().to_string();
         self.status = Some(
             match self.store.set_note(&uuid, &note) {
-                Ok(()) if note.trim().is_empty() => "已删除备注".to_string(),
-                Ok(()) => "已保存备注".to_string(),
-                Err(err) => format!("保存备注失败：{err}"),
+                Ok(()) if note.trim().is_empty() => tr("已删除备注", "Note removed").to_string(),
+                Ok(()) => tr("已保存备注", "Note saved").to_string(),
+                Err(err) => trf!("保存备注失败：{err}", "Could not save the note: {err}"),
             }
             .into(),
         );
@@ -1000,13 +1078,13 @@ impl Popup {
         };
         let pinned = !clip.pinned;
         if let Err(err) = self.store.set_pinned(&clip.uuid, pinned) {
-            self.status = Some(format!("操作失败：{err}").into());
+            self.status = Some(trf!("操作失败：{err}", "Failed: {err}").into());
         } else {
             self.status = Some(
                 if pinned {
-                    "已收藏"
+                    tr("已收藏", "Pinned")
                 } else {
-                    "已取消收藏"
+                    tr("已取消收藏", "Unpinned")
                 }
                 .into(),
             );
@@ -1026,9 +1104,9 @@ impl Popup {
             return;
         };
         if let Err(err) = self.store.delete(&clip.uuid) {
-            self.status = Some(format!("删除失败：{err}").into());
+            self.status = Some(trf!("删除失败：{err}", "Could not delete: {err}").into());
         } else {
-            self.status = Some("已删除".into());
+            self.status = Some(tr("已删除", "Deleted").into());
         }
         self.refresh(cx);
     }
@@ -1117,7 +1195,7 @@ impl Popup {
         self.close_menu(window, cx);
         // 菜单打开期间列表可能刷新过（采集到新内容），按 uuid 重新定位
         let Some(pos) = self.items.iter().position(|c| c.uuid == menu.uuid) else {
-            self.status = Some("这条记录已经不存在了".into());
+            self.status = Some(tr("这条记录已经不存在了", "This item no longer exists").into());
             return;
         };
         self.selected = pos;
@@ -1292,6 +1370,15 @@ fn highlighted(text: String, query: &str, p: &Palette) -> StyledText {
     StyledText::new(text).with_highlights(ranges.into_iter().map(move |r| (r, style)))
 }
 
+/// "3 行" / "3 lines" / "1 line"
+fn count(n: usize, zh_unit: &str, en_one: &str, en_many: &str) -> String {
+    if tessel_core::i18n::is_en() {
+        format!("{n} {}", if n == 1 { en_one } else { en_many })
+    } else {
+        format!("{n} {zh_unit}")
+    }
+}
+
 fn human_bytes(n: u64) -> String {
     match n {
         0..1024 => format!("{n} B"),
@@ -1303,7 +1390,10 @@ fn human_bytes(n: u64) -> String {
 fn preview_text(content: &str) -> String {
     if content.chars().count() > PREVIEW_CHARS {
         let head: String = content.chars().take(PREVIEW_CHARS).collect();
-        format!("{head}\n\n…（内容较长，预览只显示前 {PREVIEW_CHARS} 个字符）")
+        trf!(
+            "{head}\n\n…（内容较长，预览只显示前 {PREVIEW_CHARS} 个字符）",
+            "{head}\n\n… (long content: the preview shows the first {PREVIEW_CHARS} characters)"
+        )
     } else {
         content.to_string()
     }
@@ -1373,12 +1463,12 @@ impl Popup {
                             d.bg(p.hover)
                                 .text_color(p.text_muted)
                                 .child(div().size(px(6.)).rounded_full().bg(p.text_faint))
-                                .child("已暂停")
+                                .child(tr("已暂停", "Paused"))
                         } else {
                             d.bg(p.live_bg)
                                 .text_color(p.live_text)
                                 .child(div().size(px(6.)).rounded_full().bg(p.live_dot))
-                                .child("记录中")
+                                .child(tr("记录中", "Recording"))
                         }
                     })
                     .on_mouse_down(
@@ -1469,7 +1559,9 @@ impl Popup {
                 clip.title(),
                 format!(
                     "{} · {}",
-                    clip.source.as_deref().unwrap_or("未知来源"),
+                    clip.source
+                        .as_deref()
+                        .unwrap_or(tr("未知来源", "Unknown app")),
                     relative_time(clip.last_used_at, self.now)
                 ),
             ),
@@ -1505,7 +1597,13 @@ impl Popup {
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                     if this.editing.is_some() {
-                        this.status = Some("正在编辑：Ctrl+S 保存，Esc 放弃修改".into());
+                        this.status = Some(
+                            tr(
+                                "正在编辑：Ctrl+S 保存，Esc 放弃修改",
+                                "Editing: Ctrl+S to save, Esc to discard",
+                            )
+                            .into(),
+                        );
                         cx.notify();
                     } else if event.click_count >= 2 {
                         this.paste(pos, false, cx);
@@ -1578,11 +1676,20 @@ impl Popup {
 
     fn render_empty(&self, p: &Palette) -> impl IntoElement {
         let (title, subtitle) = if self.counts.total == 0 {
-            ("还没有任何记录", "复制任意内容，它就会出现在这里")
+            (
+                tr("还没有任何记录", "Nothing here yet"),
+                tr(
+                    "复制任意内容，它就会出现在这里",
+                    "Copy anything and it will show up here",
+                ),
+            )
         } else {
             (
-                "没有找到匹配的内容",
-                "换个关键词、按 Tab 切换分类，或用 app:  type:  is:  -词 过滤",
+                tr("没有找到匹配的内容", "No matches"),
+                tr(
+                    "换个关键词、按 Tab 切换分类，或用 app:  type:  is:  -词 过滤",
+                    "Try other words, press Tab to switch category, or filter with app:  type:  is:  -word",
+                ),
             )
         };
         v_flex()
@@ -1639,7 +1746,7 @@ impl Popup {
                         .text_xs()
                         .text_color(p.text_muted)
                         .child(Icon::new(IconName::ExternalLink).xsmall())
-                        .child("Ctrl+O 在浏览器中打开"),
+                        .child(tr("Ctrl+O 在浏览器中打开", "Ctrl+O to open in the browser")),
                 )
                 .into_any_element(),
             Kind::Color => {
@@ -1672,7 +1779,7 @@ impl Popup {
                     .child(
                         v_flex()
                             .text_sm()
-                            .child(row("原值", clip.content.trim().to_string()))
+                            .child(row(tr("原值", "Original"), clip.content.trim().to_string()))
                             .child(row("HEX", format!("#{r:02X}{g:02X}{b:02X}")))
                             .child(row("RGB", format!("{r}, {g}, {b}")))
                             .child(row(
@@ -1712,14 +1819,14 @@ impl Popup {
                                     .object_fit(ObjectFit::Contain),
                             ),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(p.text_muted)
-                            .child("Ctrl+O 用系统查看器打开"),
-                    )
+                    .child(div().text_xs().text_color(p.text_muted).child(tr(
+                        "Ctrl+O 用系统查看器打开",
+                        "Ctrl+O to open in the default viewer",
+                    )))
                     .into_any_element(),
-                None => div().child("图片文件丢失").into_any_element(),
+                None => div()
+                    .child(tr("图片文件丢失", "Image file is missing"))
+                    .into_any_element(),
             },
             Kind::File => v_flex()
                 .gap_1()
@@ -1744,7 +1851,7 @@ impl Popup {
                                         .child(if exists {
                                             name.to_string()
                                         } else {
-                                            format!("{name}（已不存在）")
+                                            trf!("{name}（已不存在）", "{name} (missing)")
                                         }),
                                 )
                                 .child(
@@ -1772,22 +1879,37 @@ impl Popup {
                     )
                 })
                 .unwrap_or_default(),
-            Kind::File => format!("{} 个文件", clip.files().count()),
+            Kind::File => count(clip.files().count(), "个文件", "file", "files"),
             Kind::Code => format!(
-                "{} · {} 行 · {} 字符",
-                clip.lang.as_deref().unwrap_or("代码"),
-                clip.line_count(),
-                clip.char_count()
+                "{} · {} · {}",
+                // 识别不出具体语言时存的是"代码"
+                clip.lang
+                    .as_deref()
+                    .filter(|l| *l != "代码")
+                    .unwrap_or(tr("代码", "Code")),
+                count(clip.line_count(), "行", "line", "lines"),
+                count(clip.char_count(), "字符", "char", "chars")
             ),
-            _ => format!("{} 行 · {} 字符", clip.line_count(), clip.char_count()),
+            _ => format!(
+                "{} · {}",
+                count(clip.line_count(), "行", "line", "lines"),
+                count(clip.char_count(), "字符", "char", "chars")
+            ),
         };
         let stats = if clip.use_count > 1 {
-            format!("{stats} · 复制过 {} 次", clip.use_count)
+            trf!(
+                "{stats} · 复制过 {} 次",
+                "{stats} · copied {} times",
+                clip.use_count
+            )
         } else {
             stats
         };
         let stats = if clip.has_rich {
-            format!("{stats} · Shift+↵ 粘贴为纯文本")
+            trf!(
+                "{stats} · Shift+↵ 粘贴为纯文本",
+                "{stats} · Shift+↵ to paste as plain text"
+            )
         } else {
             stats
         };
@@ -1817,7 +1939,9 @@ impl Popup {
                             .text_color(p.text_faint)
                             .child(format!(
                                 "{} · {}",
-                                clip.source.as_deref().unwrap_or("未知来源"),
+                                clip.source
+                                    .as_deref()
+                                    .unwrap_or(tr("未知来源", "Unknown app")),
                                 relative_time(clip.last_used_at, self.now)
                             )),
                     )
@@ -1832,7 +1956,7 @@ impl Popup {
                                 .bg(p.accent_soft)
                                 .text_xs()
                                 .text_color(p.accent_text)
-                                .child("含格式"),
+                                .child(tr("含格式", "Formatted")),
                         )
                     })
                     .when(clip.pinned, |d| {
@@ -1843,7 +1967,7 @@ impl Popup {
                                 .text_xs()
                                 .text_color(rgb(0xD97706))
                                 .child(Icon::new(IconName::StarFill).xsmall())
-                                .child("已收藏"),
+                                .child(tr("已收藏", "Pinned")),
                         )
                     }),
             )
@@ -1906,7 +2030,7 @@ impl Popup {
                     .text_xs()
                     .text_color(p.text_faint)
                     .child(Icon::new(Lucide::StickyNote).xsmall())
-                    .child(div().flex_none().child("备注"))
+                    .child(div().flex_none().child(tr("备注", "Note")))
                     .child(div().flex_none().child("·"))
                     .child(div().min_w_0().truncate().child(title)),
             )
@@ -1927,14 +2051,13 @@ impl Popup {
                     .gap_3()
                     .text_xs()
                     .text_color(p.text_muted)
-                    .child(hint(&["↵"], "保存", p))
-                    .child(hint(&["Esc"], "取消", p))
+                    .child(hint(&["↵"], tr("保存", "Save"), p))
+                    .child(hint(&["Esc"], tr("取消", "Cancel"), p))
                     .child(div().flex_1())
-                    .child(
-                        div()
-                            .text_color(p.text_faint)
-                            .child("清空后保存 = 删除备注"),
-                    ),
+                    .child(div().text_color(p.text_faint).child(tr(
+                        "清空后保存 = 删除备注",
+                        "Save it empty to remove the note",
+                    ))),
             )
     }
 
@@ -1970,7 +2093,7 @@ impl Popup {
                             .text_sm()
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(p.text)
-                            .child("编辑"),
+                            .child(tr("编辑", "Edit")),
                     )
                     .when_some(target, |d, clip| {
                         d.child(
@@ -1982,7 +2105,7 @@ impl Popup {
                                 .child(format!(
                                     "{} · {}",
                                     clip.kind.label(),
-                                    clip.source.as_deref().unwrap_or("未知来源")
+                                    clip.source.as_deref().unwrap_or(tr("未知来源", "Unknown app"))
                                 )),
                         )
                     }),
@@ -2003,9 +2126,9 @@ impl Popup {
                     ),
             )
             .child(div().text_xs().text_color(p.text_faint).child(if rich {
-                "保存后替换这条记录。原来带的格式（字体、颜色等）会去掉，只保留文字。"
+                tr("保存后替换这条记录。原来带的格式（字体、颜色等）会去掉，只保留文字。", "Saving replaces this item. Its formatting (fonts, colors…) is dropped; only the text is kept.")
             } else {
-                "保存后替换这条记录，位置和收藏状态不变。"
+                tr("保存后替换这条记录，位置和收藏状态不变。", "Saving replaces this item; its position and pin stay the same.")
             }))
     }
 
@@ -2021,15 +2144,15 @@ impl Popup {
             .text_color(p.text_muted)
             .map(|d| {
                 if self.editing.is_some() {
-                    d.child(hint(&["Ctrl", "S"], "保存", p))
-                        .child(hint(&["Ctrl", "↵"], "保存并粘贴", p))
-                        .child(hint(&["Esc"], "放弃修改", p))
+                    d.child(hint(&["Ctrl", "S"], tr("保存", "Save"), p))
+                        .child(hint(&["Ctrl", "↵"], tr("保存并粘贴", "Save & paste"), p))
+                        .child(hint(&["Esc"], tr("放弃修改", "Discard"), p))
                 } else {
-                    d.child(hint(&["↵"], "粘贴", p))
-                        .child(hint(&["Ctrl", "K"], "更多动作", p))
-                        .child(hint(&["Ctrl", "E"], "编辑", p))
-                        .child(hint(&["Ctrl", "Q"], "加入队列", p))
-                        .child(hint(&["Tab"], "分类", p))
+                    d.child(hint(&["↵"], tr("粘贴", "Paste"), p))
+                        .child(hint(&["Ctrl", "K"], tr("更多动作", "Actions"), p))
+                        .child(hint(&["Ctrl", "E"], tr("编辑", "Edit"), p))
+                        .child(hint(&["Ctrl", "Q"], tr("加入队列", "Queue"), p))
+                        .child(hint(&["Tab"], tr("分类", "Category"), p))
                 }
             })
             .child(div().flex_1())
@@ -2044,7 +2167,7 @@ impl Popup {
                         .bg(p.accent_soft)
                         .text_color(p.accent_text)
                         .child(Icon::new(Lucide::ListOrdered).xsmall())
-                        .child(format!("队列 {}", self.queue.len())),
+                        .child(trf!("队列 {}", "Queue {}", self.queue.len())),
                 )
             })
             .map(|d| match (&self.config_error, &self.status) {
@@ -2063,7 +2186,9 @@ impl Popup {
                         .text_color(p.accent_text)
                         .child(status.clone()),
                 ),
-                (None, None) if self.editing.is_none() => d.child(hint(&["Esc"], "关闭", p)),
+                (None, None) if self.editing.is_none() => {
+                    d.child(hint(&["Esc"], tr("关闭", "Close"), p))
+                }
                 (None, None) => d,
             })
     }

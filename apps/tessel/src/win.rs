@@ -478,6 +478,13 @@ pub fn set_autostart(enabled: bool) -> Result<(), String> {
     err.ok().map_err(|e| e.to_string())
 }
 
+/// Windows 显示语言是不是中文（简体、繁体都算）
+pub fn system_is_chinese() -> bool {
+    const LANG_CHINESE: u16 = 0x04;
+    let lang = unsafe { windows::Win32::Globalization::GetUserDefaultUILanguage() };
+    lang & 0x3FF == LANG_CHINESE
+}
+
 /// 系统确认框，返回用户是否点了"确定"
 pub fn confirm(title: &str, text: &str) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{

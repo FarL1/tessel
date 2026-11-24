@@ -13,7 +13,9 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, TitleBar};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use tessel_core::{Config, ThemePref};
+use tessel_core::i18n::tr;
+use tessel_core::trf;
+use tessel_core::{Config, LanguagePref, ThemePref};
 
 use crate::design::{self, Palette};
 use crate::{AppCommand, log_line};
@@ -59,6 +61,8 @@ pub struct SettingsView {
     recording: Option<HotkeyTarget>,
     recorder_focus: [FocusHandle; 2],
     add_app: Entity<InputState>,
+    /// 上次渲染时的界面语言：变了就更新窗口标题和输入框占位文字
+    rendered_english: Option<bool>,
     /// 配置未生效的原因（文件有错、热键被占用等），随下一次重载结果更新
     error: Option<SharedString>,
     /// 一次性提示（例如"新热键被占用，已恢复为旧热键"），不会被配置重载清掉，下次录制时清除
@@ -77,8 +81,12 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let add_app =
-            cx.new(|cx| InputState::new(window, cx).placeholder("程序文件名，例如 KeePassXC.exe"));
+        let add_app = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(tr(
+                "程序文件名，例如 KeePassXC.exe",
+                "Program file name, e.g. KeePassXC.exe",
+            ))
+        });
         let recorder_focus = [cx.focus_handle(), cx.focus_handle()];
         let subscriptions = vec![
             cx.subscribe_in(&add_app, window, |this, _, event, window, cx| {
@@ -118,6 +126,7 @@ impl SettingsView {
             recording: None,
             recorder_focus,
             add_app,
+            rendered_english: None,
             error: None,
             notice: None,
             storage,
@@ -137,7 +146,13 @@ impl SettingsView {
         let mut config = match Config::load_or_create(&self.dir) {
             Ok(config) => config,
             Err(err) => {
-                self.error = Some(format!("{err}。请先修正 config.toml，再在这里修改。").into());
+                self.error = Some(
+                    trf!(
+                        "{err}。请先修正 config.toml，再在这里修改。",
+                        "{err}. Fix config.toml first, then change it here."
+                    )
+                    .into(),
+                );
                 cx.notify();
                 return;
             }
@@ -240,14 +255,27 @@ impl SettingsView {
             return;
         }
         let Some(key) = hotkey_token(&ks.key) else {
-            self.error = Some(format!("不支持「{}」这个键，请换一个", ks.key).into());
+            self.error = Some(
+                trf!(
+                    "不支持「{}」这个键，请换一个",
+                    "The key \"{}\" isn't supported; please pick another",
+                    ks.key
+                )
+                .into(),
+            );
             cx.notify();
             return;
         };
         let m = &ks.modifiers;
         let is_fn_key = key.starts_with('F') && key.len() > 1;
         if !(m.control || m.alt || m.shift || m.platform) && !is_fn_key {
-            self.error = Some("热键需要包含 Ctrl / Alt / Shift / Win 中的至少一个".into());
+            self.error = Some(
+                tr(
+                    "热键需要包含 Ctrl / Alt / Shift / Win 中的至少一个",
+                    "A hotkey needs at least one of Ctrl / Alt / Shift / Win",
+                )
+                .into(),
+            );
             cx.notify();
             return;
         }
@@ -276,7 +304,13 @@ impl SettingsView {
             HotkeyTarget::Queue => HotkeyTarget::Popup,
         };
         if other.spec(&self.config).eq_ignore_ascii_case(&spec) {
-            self.error = Some(format!("「{spec}」已经用作另一个热键了，请换一个").into());
+            self.error = Some(
+                trf!(
+                    "「{spec}」已经用作另一个热键了，请换一个",
+                    "\"{spec}\" is already used for the other hotkey; please pick another"
+                )
+                .into(),
+            );
             cx.notify();
             return;
         }
@@ -362,7 +396,7 @@ fn storage_summary(dir: &std::path::Path) -> String {
         .and_then(|s| s.counts())
         .map(|c| c.total)
         .unwrap_or(0);
-    format!("{count} 条记录 · 占用 {size}")
+    trf!("{count} 条记录 · 占用 {size}", "{count} items · {size}")
 }
 
 // ───────────────────────────── 渲染 ─────────────────────────────
@@ -496,8 +530,14 @@ impl SettingsView {
                         .text_xs()
                         .text_color(p.accent_text)
                         .child(match target {
-                            HotkeyTarget::Popup => "请按下新的组合键（Esc 取消）",
-                            HotkeyTarget::Queue => "按下组合键（Esc 取消，Backspace 清除）",
+                            HotkeyTarget::Popup => tr(
+                                "请按下新的组合键（Esc 取消）",
+                                "Press the new key combination (Esc to cancel)",
+                            ),
+                            HotkeyTarget::Queue => tr(
+                                "按下组合键（Esc 取消，Backspace 清除）",
+                                "Press a key combination (Esc cancels, Backspace clears)",
+                            ),
                         })
                 } else if spec.is_empty() {
                     d.border_color(p.border)
@@ -505,7 +545,7 @@ impl SettingsView {
                         .hover(move |s| s.border_color(p.accent))
                         .text_xs()
                         .text_color(p.text_faint)
-                        .child("未设置，点击设置")
+                        .child(tr("未设置，点击设置", "Not set. Click to set"))
                 } else {
                     d.border_color(p.border)
                         .bg(p.search_bg)
@@ -530,9 +570,9 @@ impl SettingsView {
             .child(
                 v_flex()
                     .gap_0p5()
-                    .child(div().text_sm().text_color(p.text).child("不记录这些程序"))
+                    .child(div().text_sm().text_color(p.text).child(tr("不记录这些程序", "Never record these programs")))
                     .child(div().text_xs().text_color(p.text_faint).child(
-                        "从这些程序复制的内容会被直接跳过，连内容都不会读取。按 exe 文件名匹配。",
+                        tr("从这些程序复制的内容会被直接跳过，连内容都不会读取。按 exe 文件名匹配。", "Copies from these programs are skipped without reading their content. Matched by exe file name."),
                     )),
             )
             .child(h_flex().flex_wrap().gap_1p5().children(
@@ -575,7 +615,7 @@ impl SettingsView {
                 h_flex()
                     .gap_2()
                     .child(div().flex_1().child(Input::new(&self.add_app).small()))
-                    .child(Button::new("add-app").label("添加").small().on_click(
+                    .child(Button::new("add-app").label(tr("添加", "Add")).small().on_click(
                         cx.listener(|this, _, window, cx| this.add_ignored_app(window, cx)),
                     )),
             )
@@ -583,8 +623,27 @@ impl SettingsView {
 }
 
 impl Render for SettingsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = Palette::new(cx.theme().is_dark());
+        let english = tessel_core::i18n::is_en();
+        if self.rendered_english != Some(english) {
+            self.rendered_english = Some(english);
+            window.set_window_title(tr("Tessel 设置", "Tessel Settings"));
+            self.add_app.update(cx, |state, cx| {
+                state.set_placeholder(
+                    tr(
+                        "程序文件名，例如 KeePassXC.exe",
+                        "Program file name, e.g. KeePassXC.exe",
+                    ),
+                    window,
+                    cx,
+                )
+            });
+        }
+        let language_options: Vec<(LanguagePref, String)> = LanguagePref::ALL
+            .iter()
+            .map(|l| (*l, l.label().to_string()))
+            .collect();
         let theme_options: Vec<(ThemePref, String)> = ThemePref::ALL
             .iter()
             .map(|t| (*t, t.label().to_string()))
@@ -598,25 +657,25 @@ impl Render for SettingsView {
         let copy_toast = self.config.copy_toast;
         let autostart = self.autostart;
 
-        let general = card("通用", &p).child(
+        let general = card(tr("通用", "General"), &p).child(
             card_body(&p)
                 .child(row(
-                    "唤起热键",
-                    "在任何程序里按下它，打开剪贴板历史。点击右侧后按下新的组合键即可修改。",
+                    tr("唤起热键", "Hotkey"),
+                    tr("在任何程序里按下它，打开剪贴板历史。点击右侧后按下新的组合键即可修改。", "Press it in any program to open your clipboard history. Click the box and press a new combination to change it."),
                     self.render_hotkey(HotkeyTarget::Popup, &p, cx),
                     false,
                     &p,
                 ))
                 .child(row(
-                    "粘贴队列热键",
-                    "在弹窗里按 Ctrl+Q 把记录排进队列，之后在任何程序里每按一次这个热键，就按顺序粘贴下一条。",
+                    tr("粘贴队列热键", "Paste-queue hotkey"),
+                    tr("在弹窗里按 Ctrl+Q 把记录排进队列，之后在任何程序里每按一次这个热键，就按顺序粘贴下一条。", "Press Ctrl+Q in the popup to queue items; then each press of this hotkey, in any program, pastes the next one."),
                     self.render_hotkey(HotkeyTarget::Queue, &p, cx),
                     false,
                     &p,
                 ))
                 .child(row(
-                    "选中后直接粘贴",
-                    "关闭后，选中的内容只复制到剪贴板，由你自己粘贴。",
+                    tr("选中后直接粘贴", "Paste on selection"),
+                    tr("关闭后，选中的内容只复制到剪贴板，由你自己粘贴。", "When off, the selected item is only copied to the clipboard for you to paste."),
                     Switch::new("auto-paste")
                         .checked(auto_paste)
                         .on_click(cx.listener(|this, checked: &bool, _, cx| {
@@ -627,8 +686,8 @@ impl Render for SettingsView {
                     &p,
                 ))
                 .child(row(
-                    "复制时显示提示",
-                    "每次复制成功，在屏幕底部显示一下复制了什么。",
+                    tr("复制时显示提示", "Show a hint when copying"),
+                    tr("每次复制成功，在屏幕底部显示一下复制了什么。", "After each copy, briefly show what was copied at the bottom of the screen."),
                     Switch::new("copy-toast")
                         .checked(copy_toast)
                         .on_click(cx.listener(|this, checked: &bool, _, cx| {
@@ -639,8 +698,8 @@ impl Render for SettingsView {
                     &p,
                 ))
                 .child(row(
-                    "开机自动启动",
-                    "登录 Windows 后在后台启动，只显示托盘图标。",
+                    tr("开机自动启动", "Start with Windows"),
+                    tr("登录 Windows 后在后台启动，只显示托盘图标。", "Start in the background after you sign in; only the tray icon shows."),
                     Switch::new("autostart")
                         .checked(autostart)
                         .on_click(cx.listener(|this, checked: &bool, _, cx| {
@@ -653,26 +712,50 @@ impl Render for SettingsView {
                 )),
         );
 
-        let appearance = card("外观", &p).child(card_body(&p).child(row(
-            "主题",
-            "跟随系统时，Windows 切换深浅色后会自动跟着变。",
-            segmented(
-                "theme",
-                &theme_options,
-                self.config.theme,
-                &p,
-                cx,
-                |c, v| c.theme = v,
-            ),
-            true,
-            &p,
-        )));
-
-        let privacy = card("历史与隐私", &p).child(
+        let appearance = card(tr("外观", "Appearance"), &p).child(
             card_body(&p)
                 .child(row(
-                    "最多保留",
-                    "超出后自动删除最旧的记录。收藏的内容不计入，也永远不会被自动删除。",
+                    tr("主题", "Theme"),
+                    tr(
+                        "跟随系统时，Windows 切换深浅色后会自动跟着变。",
+                        "With System, Tessel follows Windows when it switches between light and dark.",
+                    ),
+                    segmented(
+                        "theme",
+                        &theme_options,
+                        self.config.theme,
+                        &p,
+                        cx,
+                        |c, v| c.theme = v,
+                    ),
+                    false,
+                    &p,
+                ))
+                // 标题两种语言都写上：切错了语言也找得到
+                .child(row(
+                    "语言 / Language",
+                    tr(
+                        "跟随系统时，中文 Windows 显示中文，其他显示英文。",
+                        "With System, Tessel uses Chinese on Chinese Windows and English otherwise.",
+                    ),
+                    segmented(
+                        "language",
+                        &language_options,
+                        self.config.language,
+                        &p,
+                        cx,
+                        |c, v| c.language = v,
+                    ),
+                    true,
+                    &p,
+                )),
+        );
+
+        let privacy = card(tr("历史与隐私", "History & privacy"), &p).child(
+            card_body(&p)
+                .child(row(
+                    tr("最多保留", "Keep up to"),
+                    tr("超出后自动删除最旧的记录。收藏的内容不计入，也永远不会被自动删除。", "The oldest items are removed beyond this. Pinned items don't count and are never removed automatically."),
                     segmented(
                         "keep",
                         &keep_options,
@@ -692,29 +775,29 @@ impl Render for SettingsView {
                         .text_xs()
                         .text_color(p.text_faint)
                         .child(
-                            "此外，密码管理器等程序标记为「不要记录」的内容，Tessel 一律不会读取。",
+                            tr("此外，密码管理器等程序标记为「不要记录」的内容，Tessel 一律不会读取。", "Content that password managers and similar programs mark as \"do not record\" is never read."),
                         ),
                 ),
         );
 
         let dir = self.dir.clone();
-        let data = card("数据", &p).child(
+        let data = card(tr("数据", "Data"), &p).child(
             card_body(&p)
                 .child(row(
-                    "数据位置",
+                    tr("数据位置", "Data folder"),
                     format!("{} · {}", self.dir.display(), self.storage),
                     h_flex()
                         .gap_2()
                         .child(
                             Button::new("open-dir")
-                                .label("打开文件夹")
+                                .label(tr("打开文件夹", "Open folder"))
                                 .small()
                                 .outline()
                                 .on_click(move |_, _, cx| cx.open_with_system(&dir)),
                         )
                         .child(
                             Button::new("open-config")
-                                .label("编辑 config.toml")
+                                .label(tr("编辑 config.toml", "Edit config.toml"))
                                 .small()
                                 .outline()
                                 .on_click(cx.listener(|this, _, _, _| {
@@ -725,10 +808,13 @@ impl Render for SettingsView {
                     &p,
                 ))
                 .child(row(
-                    "清空历史",
-                    "删除所有未收藏的记录，收藏的内容会保留。",
+                    tr("清空历史", "Clear history"),
+                    tr(
+                        "删除所有未收藏的记录，收藏的内容会保留。",
+                        "Delete every item that isn't pinned. Pinned items are kept.",
+                    ),
                     Button::new("clear")
-                        .label("清空…")
+                        .label(tr("清空…", "Clear…"))
                         .small()
                         .danger()
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -740,7 +826,7 @@ impl Render for SettingsView {
                 )),
         );
 
-        let about = card("关于", &p).child(
+        let about = card(tr("关于", "About"), &p).child(
             card_body(&p).child(
                 h_flex()
                     .px_4()
@@ -755,14 +841,16 @@ impl Render for SettingsView {
                                     .text_sm()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(p.text)
-                                    .child(format!("Tessel 拼贴 {}", env!("CARGO_PKG_VERSION"))),
+                                    .child(trf!(
+                                        "Tessel 拼贴 {}",
+                                        "Tessel {}",
+                                        env!("CARGO_PKG_VERSION")
+                                    )),
                             )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(p.text_faint)
-                                    .child("每一次复制，都拼进你的工作里。· MIT OR Apache-2.0"),
-                            ),
+                            .child(div().text_xs().text_color(p.text_faint).child(tr(
+                                "每一次复制，都拼进你的工作里。· MIT OR Apache-2.0",
+                                "A clipboard manager for Windows · MIT OR Apache-2.0",
+                            ))),
                     ),
             ),
         );
@@ -776,7 +864,7 @@ impl Render for SettingsView {
                     h_flex()
                         .gap_2()
                         .child(img(self.logo.clone()).size(px(16.)))
-                        .child(div().text_sm().child("Tessel 设置")),
+                        .child(div().text_sm().child(tr("Tessel 设置", "Tessel Settings"))),
                 ),
             )
             .when_some(self.error.clone().or(self.notice.clone()), |d, err| {
@@ -834,7 +922,7 @@ pub fn open(
         ..Default::default()
     };
     gpui_kit::open_window(options, cx, |window, cx| {
-        window.set_window_title("Tessel 设置");
+        window.set_window_title(tr("Tessel 设置", "Tessel Settings"));
         cx.new(|cx| SettingsView::new(dir, tx, config, autostart, window, cx))
     })
     .inspect_err(|err| log_line(format!("[error] 打开设置窗口失败：{err}")))
