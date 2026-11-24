@@ -16,11 +16,18 @@ pub const DEFAULT_FILE: &str = r#"# Tessel · 拼贴 配置文件
 # 唤起弹窗的全局热键。示例："Alt+V"、"Ctrl+Shift+V"、"Win+Alt+V"
 hotkey = "Alt+V"
 
+# 粘贴队列：在弹窗里按 Ctrl+Q 把记录排进队列，之后每按一次这个热键，就粘贴队列里的下一条。
+# 留空（""）表示不使用。
+queue_hotkey = "Alt+Shift+V"
+
 # 最多保留多少条历史（收藏的不计入、永不自动删除）
 max_items = 5000
 
 # 选中后的行为：true = 直接粘贴到之前的窗口；false = 只复制到剪贴板
 auto_paste = true
+
+# 每次复制成功时，在屏幕底部显示一个小提示
+copy_toast = true
 
 # 外观："system"（跟随系统）、"light"、"dark"
 theme = "system"
@@ -73,8 +80,10 @@ impl ThemePref {
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub hotkey: String,
+    pub queue_hotkey: String,
     pub max_items: usize,
     pub auto_paste: bool,
+    pub copy_toast: bool,
     pub theme: ThemePref,
     pub ignored_apps: Vec<String>,
 }
@@ -84,8 +93,10 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             hotkey: "Alt+V".into(),
+            queue_hotkey: "Alt+Shift+V".into(),
             max_items: 5000,
             auto_paste: true,
+            copy_toast: true,
             theme: ThemePref::System,
             ignored_apps: [
                 "KeePass.exe",
@@ -133,6 +144,7 @@ impl Config {
             return Err("max_items 至少为 10".into());
         }
         config.hotkey = config.hotkey.trim().to_string();
+        config.queue_hotkey = config.queue_hotkey.trim().to_string();
         Ok(config)
     }
 
@@ -154,6 +166,8 @@ impl Config {
             .map_err(|_| "config.toml 有语法错误，请先修正后再保存".to_string())?;
 
         doc["hotkey"] = value(self.hotkey.as_str());
+        doc["queue_hotkey"] = value(self.queue_hotkey.as_str());
+        doc["copy_toast"] = value(self.copy_toast);
         doc["max_items"] = value(self.max_items as i64);
         doc["auto_paste"] = value(self.auto_paste);
         doc["theme"] = value(self.theme.as_str());
@@ -198,6 +212,8 @@ mod tests {
         assert_eq!(c.hotkey, "Alt+V");
         assert_eq!(c.max_items, 5000);
         assert!(c.auto_paste);
+        assert!(c.copy_toast);
+        assert_eq!(c.queue_hotkey, "Alt+Shift+V");
         assert_eq!(c.theme, ThemePref::System);
         assert!(c.is_ignored(r"C:\Program Files\KeePassXC\keepassxc.EXE"));
         assert!(!c.is_ignored("notepad.exe"));
@@ -212,6 +228,8 @@ mod tests {
         c.hotkey = "Ctrl+Shift+V".into();
         c.max_items = 20000;
         c.auto_paste = false;
+        c.copy_toast = false;
+        c.queue_hotkey = String::new();
         c.theme = ThemePref::Dark;
         c.ignored_apps = vec!["KeePassXC.exe".into(), "微信.exe".into()];
         c.save(&dir).unwrap();

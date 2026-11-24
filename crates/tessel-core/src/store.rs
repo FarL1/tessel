@@ -306,6 +306,64 @@ impl Store {
         Ok(Some(seq))
     }
 
+    /// 修改一条文本记录的内容（重新识别类型）。位置、收藏状态、uuid 保持不变；
+    /// 原来的 HTML / RTF 格式和新文本对不上了，一并丢弃。
+    /// 改完后和另一条记录内容相同时，合并成这一条（收藏状态取两者之一）。
+    /// 返回新的类型；记录不存在、是图片 / 文件、或新内容为空时返回 `None`。
+    pub fn update_text(&mut self, uuid: &str, text: &str) -> Result<Option<Kind>> {
+        if text.trim().is_empty() {
+            return Ok(None);
+        }
+        let text: String = text.chars().take(MAX_TEXT_CHARS).collect();
+        let (kind, lang) = classify_text(&text);
+        let mut h = blake3::Hasher::new();
+        h.update(kind.as_str().as_bytes());
+        h.update(&[0]);
+        h.update(text.as_bytes());
+        let hash = h.finalize().to_hex().to_string();
+
+        let tx = self.conn.transaction()?;
+        let current: Option<(i64, String, String)> = tx
+            .query_row(
+                "SELECT seq, kind, content FROM clips WHERE uuid = ?1",
+                [uuid],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        let Some((seq, old_kind, old_content)) = current else {
+            return Ok(None);
+        };
+        if matches!(Kind::parse(&old_kind), Kind::Image | Kind::File) {
+            return Ok(None);
+        }
+        // 和另一条记录撞了：删掉那条，继承它的收藏状态
+        let merged_pin: bool = tx
+            .query_row(
+                "DELETE FROM clips WHERE hash = ?1 AND uuid != ?2 RETURNING pinned",
+                params![hash, uuid],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(false);
+        // 全文索引是外部内容表，UPDATE 没有触发器，手动同步
+        tx.execute(
+            "INSERT INTO clip_fts(clip_fts, rowid, content) VALUES ('delete', ?1, substr(?2, 1, 20000))",
+            params![seq, old_content],
+        )?;
+        tx.execute(
+            "UPDATE clips SET kind = ?1, content = ?2, hash = ?3, lang = ?4, html = NULL, rtf = NULL,
+                              pinned = pinned OR ?5
+             WHERE seq = ?6",
+            params![kind.as_str(), text, hash, lang, merged_pin, seq],
+        )?;
+        tx.execute(
+            "INSERT INTO clip_fts(rowid, content) VALUES (?1, substr(?2, 1, 20000))",
+            params![seq, text],
+        )?;
+        tx.commit()?;
+        Ok(Some(kind))
+    }
+
     /// 读取一条记录的完整内容
     pub fn get(&self, uuid: &str) -> Result<Option<Clip>> {
         self.conn
@@ -762,6 +820,60 @@ mod tests {
         let clip = &store.search("普通文本", Filter::All, 1).unwrap()[0];
         assert!(!clip.has_rich);
         assert!(store.rich_formats(&clip.uuid).unwrap().is_empty());
+    }
+
+    #[test]
+    fn update_text_in_place() {
+        let mut store = temp_store("edit");
+        store.record(text("旧的会议纪要", "记事本")).unwrap();
+        store.record(text("另一条", "记事本")).unwrap();
+        store
+            .record(NewClip {
+                payload: Payload::Text("加粗".into()),
+                source: Some("Word".into()),
+                from_self: false,
+                rich: RichFormats {
+                    html: Some(b"<b>x</b>".to_vec()),
+                    rtf: None,
+                },
+            })
+            .unwrap();
+        let find = |store: &Store, q: &str| store.search(q, Filter::All, 10).unwrap();
+        let old = find(&store, "旧的会议")[0].clone();
+
+        // 改成链接：类型重新识别，位置（seq）和 uuid 不变，全文索引同步
+        let kind = store
+            .update_text(&old.uuid, "https://example.com/新的")
+            .unwrap();
+        assert_eq!(kind, Some(Kind::Link));
+        let all = find(&store, "");
+        let edited = all.iter().find(|c| c.uuid == old.uuid).unwrap();
+        assert_eq!(edited.seq, old.seq);
+        assert_eq!(edited.kind, Kind::Link);
+        assert!(find(&store, "旧的会议").is_empty());
+        assert_eq!(find(&store, "example")[0].uuid, old.uuid);
+
+        // 富格式和新文本对不上，丢弃
+        let rich = find(&store, "加粗")[0].clone();
+        assert!(rich.has_rich);
+        store.update_text(&rich.uuid, "加粗了").unwrap();
+        assert!(!store.get(&rich.uuid).unwrap().unwrap().has_rich);
+
+        // 改成和另一条相同：合并，继承收藏
+        let other = find(&store, "另一条")[0].clone();
+        store.set_pinned(&other.uuid, true).unwrap();
+        store.update_text(&rich.uuid, "另一条").unwrap();
+        let all = find(&store, "");
+        assert_eq!(all.len(), 2);
+        let merged = all.iter().find(|c| c.uuid == rich.uuid).unwrap();
+        assert!(merged.pinned);
+        // 再次复制同样的内容，命中的是改过的这条
+        store.record(text("另一条", "微信")).unwrap();
+        assert_eq!(find(&store, "")[0].uuid, rich.uuid);
+
+        // 空内容、不存在的记录：不修改
+        assert_eq!(store.update_text(&rich.uuid, "  \n").unwrap(), None);
+        assert_eq!(store.update_text("nope", "x").unwrap(), None);
     }
 
     #[test]
