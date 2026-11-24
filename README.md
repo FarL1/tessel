@@ -4,9 +4,11 @@
 
 <h1 align="center">Tessel · 拼贴</h1>
 
-<p align="center"><b>每一次复制，都拼进你的工作里。</b></p>
+<p align="center"><b>开源的 Windows 剪贴板管理器（剪贴板历史工具）</b></p>
 
-<p align="center">原生、轻量、键盘优先的开源剪贴板工具。</p>
+<p align="center">自动记住你复制过的文字、链接、图片和文件；按 <code>Alt+V</code> 随时搜索，一键粘贴回去。</p>
+
+<p align="center"><i>An open-source, keyboard-first clipboard manager and clipboard history app for Windows, built with Rust.</i></p>
 
 <p align="center">
   <img alt="平台" src="https://img.shields.io/badge/平台-Windows%2010%20%7C%2011-4F46E5">
@@ -16,16 +18,49 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/overview.png" width="760" alt="Tessel 主界面：左侧是剪贴板历史，右侧是预览">
+  <img src="docs/images/overview.png" width="760" alt="Tessel 剪贴板管理器主界面：左侧是剪贴板历史列表，右侧是预览">
 </p>
 
-> **状态**：M1（Windows 本地版）已完成，日常可用。多设备同步、移动端在后续里程碑中，见[路线图](#路线图)。
+> **状态**：M1（Windows 本地版）已完成，日常可用；M2（体验打磨）进行中。多设备同步、移动端在后续里程碑中，见[路线图](#路线图)。
+
+## Tessel 是什么
+
+Tessel 是一个**剪贴板管理器**：它在后台记下你每一次复制（`Ctrl+C`）的内容，形成一份可以搜索的**剪贴板历史**。
+之后不管过了多久，在任何程序里按 `Alt+V`，输入几个字找到那一条，按回车就粘贴到原来的位置。
+
+它解决的是这些日常的小麻烦：
+
+- 刚才复制的链接被新复制的内容覆盖了，只能回去再找一遍
+- 填表、整理资料时，要在两个窗口之间来回切换、复制、粘贴很多次
+- 一段常用的文字（地址、模板回复、命令）每次都要重新找
+- 从网页复制的内容带着格式，粘贴进文档里乱了样式
+
+如果你在找下面这些东西，Tessel 就是这一类软件：
+
+- Windows 剪贴板历史、剪贴板增强工具、复制粘贴工具
+- 比 Windows 自带的 `Win+V` 剪贴板更强的替代品
+- Ditto、CopyQ 之类剪贴板软件的替代
+- macOS 上 Paste、Maccy、Raycast 剪贴板历史那样的工具，但是在 Windows 上
+
+### 和 Windows 自带的剪贴板历史（Win+V）有什么不同
+
+| | Windows 自带（`Win+V`） | Tessel |
+|---|---|---|
+| 保存多少条 | 最近 25 条 | 默认 5000 条，可调到 10 万条；收藏的永久保留 |
+| 重启电脑后 | 清空（固定的除外） | 全部保留 |
+| 搜索 | 简单过滤 | 全文搜索、拼音首字母、按来源程序 / 类型过滤 |
+| 粘贴 | 选中后粘贴 | 回车直接粘贴回原窗口；`Ctrl+1–9` 快速粘贴；粘贴队列依次粘贴 |
+| 处理内容 | — | 格式化 JSON、去掉链接追踪参数、转换颜色格式、编辑后再粘贴…… |
+| 数据在哪 | 本机（可选云同步） | 只在本机，开源可查 |
 
 ## 为什么是 Tessel
 
 - **真正轻量**：基于 [GPUI](https://www.gpui.rs/)（Zed 编辑器的 GPU 渲染 UI 框架）原生绘制，后台常驻内存约 **18MB**，大约是同等 WebView 方案的 1/4。
 - **快**：按下热键约 40ms 出现；几千条历史里搜索只要几毫秒；列表是虚拟列表，历史再多也流畅。
-- **键盘优先**：唤起、搜索、选择、粘贴都不用碰鼠标，`Ctrl+1–9` 快速粘贴，`Tab` 切换分类。
+- **键盘优先**：唤起、搜索、选择、粘贴都不用碰鼠标，`Ctrl+1–9` 快速粘贴，`Tab` 切换分类，`Ctrl+K` 打开动作菜单。
+- **找得到**：全文搜索，中文两个字也能搜；支持拼音首字母（`hyjy` 找到"会议纪要"）；可以按来源程序、类型过滤；给常用的内容加备注和 `#标签`。
+- **粘贴队列**：先把几段内容排好队，再在目标程序里每按一次 `Alt+Shift+V` 粘贴一条，填表、搬资料不用来回切窗口。
+- **复制有回应**：每次复制成功，屏幕底部会轻轻提示一下复制了什么，不打断输入。
 - **认得你复制的是什么**：自动识别链接、颜色、代码（并猜出语言）、图片、文件，按类型给出合适的预览。
 - **格式不丢**：从网页、Word、Excel 复制的内容，粘贴回去仍带格式；`Shift+Enter` 粘贴为纯文本。
 - **尊重隐私**：数据只存在本机；密码管理器等标记为"不要记录"的内容一律不读；可以指定不记录的程序、随时暂停。
@@ -56,7 +91,7 @@
 
 | 按键 | 作用 |
 |---|---|
-| 直接输入 | 搜索（空格分隔多个关键词；中文两个字也能搜） |
+| 直接输入 | 搜索（空格分隔多个关键词；中文两个字也能搜；支持拼音，`hyjy` 或 `huiyi` 都能找到"会议纪要"） |
 | `↑` `↓` | 选择 |
 | `Enter` | 粘贴到之前的窗口（保留格式） |
 | `Shift+Enter` | 粘贴为纯文本 |
@@ -67,6 +102,7 @@
 | `Ctrl+O` | 打开：链接用浏览器、文件在资源管理器中定位、图片用系统查看器 |
 | `Ctrl+E` | 编辑这一条的文字：`Ctrl+S` 保存，`Ctrl+Enter` 保存并粘贴，`Esc` 放弃 |
 | `Ctrl+Q` | 加入 / 移出粘贴队列（见下） |
+| `F2` | 写备注：给这一条起个名字，或者用 `#标签` 分类（列表里显示备注，搜索时也会搜备注） |
 | `Ctrl+K` | 动作菜单：只复制不粘贴、格式化 JSON、去掉链接追踪参数、转换颜色格式、合并为一行……（只列出对这一条有用的） |
 | `Ctrl+,` | 打开设置 |
 | `Esc` | 关闭 |
@@ -78,6 +114,7 @@
 | `app:微信`（或 `来源:微信`） | 只看某个程序复制的 |
 | `type:link`（或 `类型:链接`） | 只看某种类型：text / link / code / image / file / color |
 | `is:pinned`（或 `is:收藏`）、`is:rich` | 只看收藏的 / 带格式的 |
+| `#常用`（或 `tag:常用`） | 只看备注里带 `#常用` 标签的 |
 | `-草稿` | 排除包含"草稿"的 |
 
 例如 `报销 app:飞书 -草稿`。
@@ -136,6 +173,21 @@
 - [ ] **M5 macOS / Linux + 插件**
 
 详见 [项目方案与路线图](docs/plan.md)。
+
+## In English
+
+Tessel is a free, open-source **clipboard manager for Windows 10/11**. It keeps a searchable history of
+everything you copy — text, rich text, links, colors, code, images and files — and lets you paste any of it back
+with a few keystrokes:
+
+- Press `Alt+V` anywhere, type to search (full-text, CJK and pinyin initials), press `Enter` to paste into the previous window
+- Native GPU-rendered UI ([GPUI](https://www.gpui.rs/)), ~18 MB of memory in the background, opens in ~40 ms
+- Keeps rich-text formatting (HTML / RTF), or paste as plain text with `Shift+Enter`
+- Paste queue: queue several clips, then paste them one by one with `Alt+Shift+V`
+- Action menu (`Ctrl+K`): format JSON, strip tracking parameters from URLs, convert colors, edit before pasting
+- Private by design: data stays on your machine; respects the "exclude from clipboard history" flag used by password managers
+
+An alternative to the built-in Windows clipboard history (`Win+V`), Ditto or CopyQ. The interface is currently in Chinese.
 
 ## 开发
 
