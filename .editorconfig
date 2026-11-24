@@ -1,0 +1,20 @@
+# https://editorconfig.org —— 统一编辑器的换行、缩进和编码
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{yml,yaml,json,md}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+# PowerShell 5.1 按系统代码页读取无 BOM 的脚本，中文会乱码，所以 .ps1 保留 UTF-8 BOM
+[*.ps1]
+charset = utf-8-bom
