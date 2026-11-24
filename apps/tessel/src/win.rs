@@ -269,3 +269,100 @@ pub fn acquire_single_instance() -> Option<ShowRequests> {
         Some(ShowRequests(event.0 as isize))
     }
 }
+
+// ───────────────────────────── 开机自启 ─────────────────────────────
+
+const RUN_KEY: windows::core::PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
+const RUN_VALUE: windows::core::PCWSTR = w!("Tessel");
+
+fn autostart_command() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    Some(format!("\"{}\" --background", exe.display()))
+}
+
+/// 注册表里登记的自启命令是否指向当前这个 exe
+pub fn autostart_enabled() -> bool {
+    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW};
+    let mut buf = [0u16; 1024];
+    let mut size = (buf.len() * 2) as u32;
+    let err = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            RUN_KEY,
+            RUN_VALUE,
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr() as *mut _),
+            Some(&mut size),
+        )
+    };
+    if err.is_err() {
+        return false;
+    }
+    let len = (size as usize / 2).saturating_sub(1);
+    let value = String::from_utf16_lossy(&buf[..len]);
+    autostart_command().is_some_and(|cmd| cmd.eq_ignore_ascii_case(&value))
+}
+
+pub fn set_autostart(enabled: bool) -> Result<(), String> {
+    use windows::Win32::System::Registry::{
+        HKEY_CURRENT_USER, REG_SZ, RegDeleteKeyValueW, RegSetKeyValueW,
+    };
+    let err = if enabled {
+        let cmd = autostart_command().ok_or("无法获取程序路径")?;
+        let wide: Vec<u16> = cmd.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            RegSetKeyValueW(
+                HKEY_CURRENT_USER,
+                RUN_KEY,
+                RUN_VALUE,
+                REG_SZ.0,
+                Some(wide.as_ptr() as *const _),
+                (wide.len() * 2) as u32,
+            )
+        }
+    } else {
+        let err = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_KEY, RUN_VALUE) };
+        // 本来就没有登记，也算成功
+        if err == windows::Win32::Foundation::ERROR_FILE_NOT_FOUND {
+            return Ok(());
+        }
+        err
+    };
+    err.ok().map_err(|e| e.to_string())
+}
+
+/// 系统确认框，返回用户是否点了"确定"
+pub fn confirm(title: &str, text: &str) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        IDOK, MB_ICONWARNING, MB_OKCANCEL, MB_SETFOREGROUND, MB_TOPMOST, MessageBoxW,
+    };
+    let result = unsafe {
+        MessageBoxW(
+            None,
+            &windows::core::HSTRING::from(text),
+            &windows::core::HSTRING::from(title),
+            MB_OKCANCEL | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND,
+        )
+    };
+    result == IDOK
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 会读写当前用户的 Run 注册表项，结束时恢复原状。
+    #[test]
+    fn autostart_roundtrip() {
+        let original = autostart_enabled();
+        set_autostart(true).unwrap();
+        assert!(autostart_enabled());
+        set_autostart(false).unwrap();
+        assert!(!autostart_enabled());
+        // 没有登记时再关闭也应成功
+        set_autostart(false).unwrap();
+        set_autostart(original).unwrap();
+        assert_eq!(autostart_enabled(), original);
+    }
+}

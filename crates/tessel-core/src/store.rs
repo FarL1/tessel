@@ -59,6 +59,11 @@ CREATE TRIGGER IF NOT EXISTS clips_ad AFTER DELETE ON clips BEGIN
 END;
 ";
 
+/// 列表查询只取内容的前 N 个字符（标题、文件数、颜色都够用），完整内容用 `get()` 按需读取
+pub const LIST_CONTENT_CHARS: usize = 4000;
+
+const LIST_COLUMNS: &str = "c.seq, c.uuid, c.kind, substr(c.content, 1, 4000), c.source,      c.created_at, c.last_used_at, c.use_count, c.pinned, c.lang, c.img_file, c.img_w, c.img_h, c.img_bytes";
+
 const COLUMNS: &str = "c.seq, c.uuid, c.kind, c.content, c.source, c.created_at, c.last_used_at, \
      c.use_count, c.pinned, c.lang, c.img_file, c.img_w, c.img_h, c.img_bytes";
 
@@ -259,7 +264,24 @@ impl Store {
         Ok(Some(seq))
     }
 
+    /// 读取一条记录的完整内容
+    pub fn get(&self, uuid: &str) -> Result<Option<Clip>> {
+        self.conn
+            .query_row(
+                &format!("SELECT {COLUMNS} FROM clips c WHERE c.uuid = ?1"),
+                [uuid],
+                |r| self.row_to_clip(r),
+            )
+            .optional()
+    }
+
+    /// 清空所有未收藏的记录，返回删除的条数
+    pub fn clear_unpinned(&mut self) -> Result<usize> {
+        self.prune(0)
+    }
+
     /// 搜索。空格分隔多个关键词（AND）；结果按最近使用倒序。
+    /// 返回的 `content` 最多 `LIST_CONTENT_CHARS` 个字符。
     pub fn search(&self, query: &str, filter: Filter, limit: usize) -> Result<Vec<Clip>> {
         let (long, short): (Vec<&str>, Vec<&str>) = query
             .split_whitespace()
@@ -288,7 +310,7 @@ impl Store {
 
         let sql = if long.is_empty() {
             format!(
-                "SELECT {COLUMNS} FROM clips c WHERE 1=1{where_extra} ORDER BY c.seq DESC LIMIT {limit}"
+                "SELECT {LIST_COLUMNS} FROM clips c WHERE 1=1{where_extra} ORDER BY c.seq DESC LIMIT {limit}"
             )
         } else {
             let fts = long
@@ -298,7 +320,7 @@ impl Store {
                 .join(" ");
             args.insert(0, fts);
             format!(
-                "SELECT {COLUMNS} FROM clip_fts JOIN clips c ON c.seq = clip_fts.rowid
+                "SELECT {LIST_COLUMNS} FROM clip_fts JOIN clips c ON c.seq = clip_fts.rowid
                  WHERE clip_fts MATCH ?{where_extra} ORDER BY clip_fts.rowid DESC LIMIT {limit}"
             )
         };
@@ -511,10 +533,22 @@ mod tests {
         assert_eq!(left.len(), 4);
         assert!(left.iter().any(|c| c.uuid == oldest));
 
+        // 列表查询截断内容，get() 返回完整内容
+        let long = "长".repeat(LIST_CONTENT_CHARS + 100);
+        store.record(text(&long, "x")).unwrap();
+        let listed = &store.search("", Filter::All, 1).unwrap()[0];
+        assert_eq!(listed.content.chars().count(), LIST_CONTENT_CHARS);
+        assert_eq!(store.get(&listed.uuid).unwrap().unwrap().content, long);
+        let long_uuid = listed.uuid.clone();
+        store.delete(&long_uuid).unwrap();
+
         store.delete(&oldest).unwrap();
         assert_eq!(store.search("", Filter::All, 100).unwrap().len(), 3);
         // 删除后 FTS 索引也要同步
         assert_eq!(store.search("内容", Filter::All, 100).unwrap().len(), 3);
+        store.set_pinned(&left[0].uuid, true).unwrap();
+        assert_eq!(store.clear_unpinned().unwrap(), 2);
+        assert_eq!(store.search("", Filter::All, 100).unwrap().len(), 1);
     }
 
     #[test]

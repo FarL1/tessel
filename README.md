@@ -52,7 +52,23 @@ cargo run -p icon-gen --release                      # 修改 assets/brand/*.svg
 | `spikes/` | M0 技术验证程序，保留作参考 |
 | `tools/icon-gen` | 从 SVG 生成各尺寸 PNG 和 .ico |
 
-数据存放在 `%LOCALAPPDATA%\Tessel\`（`tessel.db` + `images/`），可以用环境变量 `TESSEL_DATA_DIR` 换到别的目录。
+数据存放在 `%LOCALAPPDATA%\Tessel\`（`tessel.db` + `images/` + `config.toml`），可以用环境变量 `TESSEL_DATA_DIR` 换到别的目录。
+
+## 设置
+
+设置就是数据目录里的 `config.toml`（托盘菜单 →"打开设置文件…"），**保存后自动生效**：
+
+| 项 | 默认 | 说明 |
+|---|---|---|
+| `hotkey` | `"Alt+V"` | 全局热键，如 `"Ctrl+Shift+V"`、`"Win+Alt+V"`；新热键被占用时保留旧的 |
+| `max_items` | `5000` | 最多保留的历史条数（收藏不计入） |
+| `auto_paste` | `true` | 选中后直接粘贴；`false` 则只复制 |
+| `theme` | `"system"` | `"system"` / `"light"` / `"dark"` |
+| `ignored_apps` | 常见密码管理器 | 不记录这些程序复制的内容（按 exe 文件名） |
+
+写错时会保留原来的设置，并在弹窗底部提示出错的行号。
+
+托盘菜单里还有：暂停记录、开机自动启动、重置窗口位置、清空历史（保留收藏）。
 
 ## 许可证
 

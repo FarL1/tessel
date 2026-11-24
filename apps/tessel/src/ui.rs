@@ -7,12 +7,12 @@ use std::time::Instant;
 
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, Theme};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, Theme, ThemeMode};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use tessel_clipboard::WriteContent;
 use tessel_core::time::{now_ms, relative as relative_time};
-use tessel_core::{Clip, Counts, Filter, Kind, Store};
+use tessel_core::{Clip, Config, Counts, Filter, Kind, Store, ThemePref};
 
 use crate::design::{self, Palette, parse_hex_color};
 use crate::{debug_log, log_line, win};
@@ -34,8 +34,9 @@ actions!(
 );
 
 const CONTEXT: &str = "ClipPopup";
-/// 一次最多加载的条数（列表是普通滚动列表，M2 换成虚拟列表后再放开）
-const RESULT_LIMIT: usize = 300;
+/// 一次最多加载的条数。列表是虚拟列表（只渲染可见的行），条数主要影响内存：
+/// 列表查询的内容已截断为 4000 字符，预览和粘贴时再按需读取完整内容。
+const RESULT_LIMIT: usize = 1000;
 /// 预览区最多显示的字符数，避免超长文本拖慢渲染
 const PREVIEW_CHARS: usize = 8_000;
 
@@ -70,18 +71,25 @@ pub struct Popup {
     prev_foreground: Option<isize>,
     store: Store,
     paused: Arc<AtomicBool>,
+    /// 暂停状态在界面里切换时通知托盘
+    on_pause_changed: Box<dyn Fn(bool)>,
+    config: Config,
     search: Entity<InputState>,
     query: String,
     filter_ix: usize,
     items: Vec<Clip>,
+    /// 当前选中项的完整内容（列表里的内容是截断过的）
+    preview: Option<Clip>,
     counts: Counts,
     /// 在当前结果中的位置
     selected: usize,
     /// 渲染时用的"现在"，用来算"5 分钟前"
     now: i64,
     show_count: usize,
-    scroll: ScrollHandle,
+    scroll: UniformListScrollHandle,
     status: Option<SharedString>,
+    /// 配置文件的错误：一直显示在底栏，直到改正
+    config_error: Option<SharedString>,
     logo: Arc<Image>,
     /// 上次自动摆放的位置；隐藏时如果窗口不在这里，说明用户拖动过
     placed_at: Option<(i32, i32)>,
@@ -95,6 +103,8 @@ impl Popup {
         hwnd: isize,
         store: Store,
         paused: Arc<AtomicBool>,
+        config: Config,
+        on_pause_changed: Box<dyn Fn(bool)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -105,7 +115,7 @@ impl Popup {
                 if let InputEvent::Change = event {
                     this.query = state.read(cx).value().to_string();
                     this.selected = 0;
-                    this.scroll.scroll_to_item(0);
+                    this.scroll.scroll_to_item(0, ScrollStrategy::Top);
                     this.refresh(cx);
                 }
             }),
@@ -123,9 +133,11 @@ impl Popup {
                     this.search.update(cx, |state, cx| state.focus(window, cx));
                 }
             }),
-            // 跟随系统深浅色
-            cx.observe_window_appearance(window, |_, window, cx| {
-                Theme::sync_system_appearance(Some(window), cx);
+            // 主题设为"跟随系统"时，系统切换深浅色后实时更新
+            cx.observe_window_appearance(window, |this, window, cx| {
+                if this.config.theme == ThemePref::System {
+                    Theme::sync_system_appearance(Some(window), cx);
+                }
             }),
         ];
 
@@ -135,16 +147,20 @@ impl Popup {
             prev_foreground: None,
             store,
             paused,
+            on_pause_changed,
+            config,
             search,
             query: String::new(),
             filter_ix: 0,
             items: Vec::new(),
+            preview: None,
             counts: Counts::default(),
             selected: 0,
             now: now_ms(),
             show_count: 0,
-            scroll: ScrollHandle::new(),
+            scroll: UniformListScrollHandle::new(),
             status: None,
+            config_error: None,
             logo: Arc::new(Image::from_bytes(
                 ImageFormat::Png,
                 include_bytes!("../../../assets/brand/png/tessel-64.png").to_vec(),
@@ -153,8 +169,68 @@ impl Popup {
             user_pos: None,
             _subscriptions: subscriptions,
         };
+        this.apply_theme(window, cx);
         this.refresh(cx);
         this
+    }
+
+    fn apply_theme(&self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.config.theme {
+            ThemePref::System => Theme::sync_system_appearance(Some(window), cx),
+            ThemePref::Light => Theme::change(ThemeMode::Light, Some(window), cx),
+            ThemePref::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
+        }
+    }
+
+    /// 配置文件重新加载后调用
+    pub fn apply_config(&mut self, config: Config, window: &mut Window, cx: &mut Context<Self>) {
+        self.config = config;
+        self.config_error = None;
+        self.apply_theme(window, cx);
+        cx.notify();
+    }
+
+    pub fn set_config_error(&mut self, error: String, cx: &mut Context<Self>) {
+        self.config_error = Some(error.into());
+        cx.notify();
+    }
+
+    /// 在底部状态栏显示一条提示（下次唤起时清除）
+    pub fn set_status(&mut self, status: String, cx: &mut Context<Self>) {
+        self.status = Some(status.into());
+        cx.notify();
+    }
+
+    pub fn set_paused(&mut self, paused: bool, cx: &mut Context<Self>) {
+        self.paused.store(paused, Ordering::Relaxed);
+        (self.on_pause_changed)(paused);
+        self.set_status(
+            if paused {
+                "已暂停记录"
+            } else {
+                "已恢复记录"
+            }
+            .into(),
+            cx,
+        );
+    }
+
+    pub fn clear_history(&mut self, cx: &mut Context<Self>) {
+        match self.store.clear_unpinned() {
+            Ok(n) => self.status = Some(format!("已清空 {n} 条历史").into()),
+            Err(err) => self.status = Some(format!("清空失败：{err}").into()),
+        }
+        self.selected = 0;
+        self.refresh(cx);
+    }
+
+    /// 读取第 `pos` 条的完整内容（列表里的是截断过的）
+    fn full_clip(&self, pos: usize) -> Option<Clip> {
+        let listed = self.items.get(pos)?;
+        match self.store.get(&listed.uuid) {
+            Ok(Some(clip)) => Some(clip),
+            _ => Some(listed.clone()),
+        }
     }
 
     fn filter(&self) -> Filter {
@@ -219,7 +295,7 @@ impl Popup {
         self.status = None;
         self.show_count += 1;
         self.query.clear();
-        self.scroll.scroll_to_item(0);
+        self.scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.refresh(cx);
 
         // 用户拖动过就沿用那个位置（如果还在某块屏幕上），否则放在鼠标所在屏幕的偏上位置
@@ -296,13 +372,18 @@ impl Popup {
     }
 
     fn paste(&mut self, pos: usize, plain: bool, cx: &mut Context<Self>) {
-        let Some(clip) = self.items.get(pos).cloned() else {
+        let Some(clip) = self.full_clip(pos) else {
             return;
         };
         let t0 = Instant::now();
         if let Err(err) = self.write_to_clipboard(&clip) {
             self.status = Some(format!("写入剪贴板失败：{err}").into());
             cx.notify();
+            return;
+        }
+        // 设置为"只复制"时：关闭弹窗、把焦点还回去，由用户自己粘贴
+        if !self.config.auto_paste {
+            self.hide(true, cx);
             return;
         }
         let Some(target) = self.prev_foreground.take() else {
@@ -336,29 +417,21 @@ impl Popup {
             return;
         }
         self.selected = (self.selected as isize + delta).rem_euclid(len as isize) as usize;
-        self.scroll.scroll_to_item(self.selected);
+        self.scroll
+            .scroll_to_item(self.selected, ScrollStrategy::Nearest);
         cx.notify();
     }
 
     fn select_filter(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.filter_ix = ix % Filter::ALL.len();
         self.selected = 0;
-        self.scroll.scroll_to_item(0);
+        self.scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.refresh(cx);
     }
 
     fn toggle_pause(&mut self, cx: &mut Context<Self>) {
         let paused = !self.paused.load(Ordering::Relaxed);
-        self.paused.store(paused, Ordering::Relaxed);
-        self.status = Some(
-            if paused {
-                "已暂停记录"
-            } else {
-                "已恢复记录"
-            }
-            .into(),
-        );
-        cx.notify();
+        self.set_paused(paused, cx);
     }
 
     /// Ctrl+1–9 快速粘贴。数字键没有被其他组件绑定，用捕获阶段的按键监听即可。
@@ -720,6 +793,9 @@ impl Popup {
             .id(("row", clip.seq as usize))
             .relative()
             .h(design::ROW_HEIGHT)
+            // 虚拟列表不会把列表宽度传给行，这里显式给出（左右各留 8px 外边距）
+            .w(design::LIST_WIDTH - px(16.))
+            .flex_none()
             .mx_2()
             .px_2()
             .gap_3()
@@ -1056,9 +1132,19 @@ impl Popup {
             .child(hint(&["Shift", "Del"], "删除", p))
             .child(hint(&["Tab"], "分类", p))
             .child(div().flex_1())
-            .map(|d| match &self.status {
-                Some(status) => d.child(div().text_color(p.accent_text).child(status.clone())),
-                None => d.child(hint(&["Esc"], "关闭", p)),
+            .map(|d| match (&self.config_error, &self.status) {
+                (Some(err), _) => d.child(
+                    h_flex()
+                        .min_w_0()
+                        .gap_1()
+                        .text_color(rgb(0xDC2626))
+                        .child(Icon::new(IconName::TriangleAlert).xsmall())
+                        .child(div().truncate().child(format!("设置未生效 · {err}"))),
+                ),
+                (None, Some(status)) => {
+                    d.child(div().text_color(p.accent_text).child(status.clone()))
+                }
+                (None, None) => d.child(hint(&["Esc"], "关闭", p)),
             })
     }
 }
@@ -1066,14 +1152,33 @@ impl Popup {
 impl Render for Popup {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = Palette::new(cx.theme().is_dark());
-        let rows: Vec<AnyElement> = (0..self.items.len())
-            .map(|pos| self.render_row(pos, &p, cx))
-            .collect();
+
+        // 选中项变化时读取它的完整内容（列表里的内容是截断过的）
+        let selected_uuid = self.items.get(self.selected).map(|c| c.uuid.clone());
+        if self.preview.as_ref().map(|c| &c.uuid) != selected_uuid.as_ref() {
+            self.preview = self.full_clip(self.selected);
+        }
         let preview = self
-            .items
-            .get(self.selected)
+            .preview
+            .as_ref()
             .map(|clip| self.render_preview(clip, &p).into_any_element());
         let empty = self.items.is_empty();
+
+        // 虚拟列表：只渲染可见的那几行，历史再多滚动也流畅
+        let list = uniform_list(
+            "list",
+            self.items.len(),
+            cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                range
+                    .map(|pos| this.render_row(pos, &p, cx))
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .w(design::LIST_WIDTH)
+        .h_full()
+        .flex_none()
+        .py_2()
+        .track_scroll(&self.scroll);
 
         let content = h_flex()
             .flex_1()
@@ -1081,18 +1186,9 @@ impl Render for Popup {
             .items_stretch()
             .when(empty, |d| d.child(self.render_empty(&p)))
             .when(!empty, |d| {
-                d.child(
-                    div()
-                        .id("list")
-                        .w(design::LIST_WIDTH)
-                        .flex_none()
-                        .py_2()
-                        .overflow_y_scroll()
-                        .track_scroll(&self.scroll)
-                        .children(rows),
-                )
-                .child(div().w(px(1.)).bg(p.divider))
-                .children(preview)
+                d.child(list)
+                    .child(div().w(px(1.)).bg(p.divider))
+                    .children(preview)
             });
 
         v_flex()

@@ -80,9 +80,13 @@ type Callback = Box<dyn Fn(NewClip)>;
 struct WatcherState {
     formats: Formats,
     paused: Arc<AtomicBool>,
+    is_ignored: Box<dyn Fn(&str) -> bool>,
     callback: Callback,
     /// exe 路径 → 显示名 的缓存
     app_names: HashMap<String, Option<String>>,
+    /// 本轮防抖窗口里第一次通知时的剪贴板所有者进程（pid, exe 路径）。
+    /// .NET 等程序写完会立刻 OleFlushClipboard，之后所有者就变成空了，所以必须尽早记录。
+    pending_owner: Option<(u32, String)>,
 }
 
 thread_local! {
@@ -91,6 +95,7 @@ thread_local! {
 
 pub fn spawn_watcher(
     paused: Arc<AtomicBool>,
+    is_ignored: impl Fn(&str) -> bool + Send + 'static,
     on_capture: impl Fn(NewClip) + Send + 'static,
 ) -> std::io::Result<()> {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -101,8 +106,10 @@ pub fn spawn_watcher(
                 *s.borrow_mut() = Some(WatcherState {
                     formats: Formats::new(),
                     paused,
+                    is_ignored: Box::new(is_ignored),
                     callback: Box::new(on_capture),
                     app_names: HashMap::new(),
+                    pending_owner: None,
                 })
             });
             match create_listener_window() {
@@ -159,6 +166,14 @@ fn create_listener_window() -> windows::core::Result<HWND> {
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
         WM_CLIPBOARDUPDATE => {
+            STATE.with(|s| {
+                if let Some(state) = s.borrow_mut().as_mut()
+                    && state.pending_owner.is_none()
+                {
+                    state.pending_owner =
+                        unsafe { GetClipboardOwner() }.ok().and_then(owner_process);
+                }
+            });
             // 重复 SetTimer 会重置计时：连续通知只在最后一次之后处理一次
             unsafe { SetTimer(Some(hwnd), DEBOUNCE_TIMER, DEBOUNCE_MS, None) };
             LRESULT(0)
@@ -353,6 +368,8 @@ fn app_display_name(exe: &str) -> Option<String> {
 }
 
 fn on_clipboard_changed(hwnd: HWND, state: &mut WatcherState) {
+    // 先取出，保证任何提前返回都不会让它残留到下一轮
+    let first_owner = state.pending_owner.take();
     if state.paused.load(Ordering::Relaxed) {
         return;
     }
@@ -364,10 +381,16 @@ fn on_clipboard_changed(hwnd: HWND, state: &mut WatcherState) {
     }
 
     // 来源应用：剪贴板所有者窗口 → 进程；拿不到时退回前台窗口
-    let owner = unsafe { GetClipboardOwner() }
-        .ok()
-        .and_then(owner_process)
+    // 来源应用：优先用第一次通知时记下的所有者，其次是现在的所有者，最后退回前台窗口
+    let owner = first_owner
+        .or_else(|| unsafe { GetClipboardOwner() }.ok().and_then(owner_process))
         .or_else(|| owner_process(unsafe { GetForegroundWindow() }));
+    if owner
+        .as_ref()
+        .is_some_and(|(_, exe)| (state.is_ignored)(exe))
+    {
+        return;
+    }
     let from_self = owner
         .as_ref()
         .is_some_and(|(pid, _)| *pid == unsafe { GetCurrentProcessId() });

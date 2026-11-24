@@ -14,19 +14,21 @@ mod windows;
 /// 启动后台监听线程。每次剪贴板变化（防抖合并后）调用一次 `on_capture`。
 ///
 /// - `paused` 为 true 时忽略所有变化（"暂停记录"）
+/// - `is_ignored(exe 路径)` 返回 true 时跳过（"忽略的应用"），在读取内容之前判断
 /// - 带隐私标记的内容（密码管理器等）直接跳过，不会读取内容
 /// - 回调在监听线程上执行，不要在里面做耗时操作以外的阻塞等待
 pub fn spawn_watcher(
     paused: Arc<AtomicBool>,
+    is_ignored: impl Fn(&str) -> bool + Send + 'static,
     on_capture: impl Fn(NewClip) + Send + 'static,
 ) -> std::io::Result<()> {
     #[cfg(windows)]
     {
-        windows::spawn_watcher(paused, on_capture)
+        windows::spawn_watcher(paused, is_ignored, on_capture)
     }
     #[cfg(not(windows))]
     {
-        let _ = (paused, on_capture);
+        let _ = (paused, is_ignored, on_capture);
         Err(std::io::Error::other(
             "clipboard watcher not implemented on this platform",
         ))

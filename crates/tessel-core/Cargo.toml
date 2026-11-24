@@ -11,6 +11,8 @@ publish.workspace = true
 rusqlite.workspace = true
 blake3.workspace = true
 uuid.workspace = true
+serde.workspace = true
+toml.workspace = true
 
 [lints]
 workspace = true
