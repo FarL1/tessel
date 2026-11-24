@@ -3,7 +3,7 @@
 //! 双击启动时直接弹出主界面；之后常驻托盘，按热键（默认 Alt+V）唤起：
 //! 输入过滤 → ↑↓ 选择 → Enter 粘贴回之前的窗口；Esc 或点击外部隐藏。
 //!
-//! 命令行参数：`--background` 启动后不弹出（开机自启用）。
+//! 命令行参数：`--background` 启动后不弹出（开机自启用）；`--settings` 启动后打开设置窗口。
 //! 环境变量：TESSEL_DEBUG=1 打印详细日志；TESSEL_DATA_DIR 指定数据目录（测试用）；
 //! TESSEL_KIND=normal|popup；TESSEL_BG=opaque|mica
 
@@ -14,6 +14,7 @@
 mod win;
 
 mod design;
+mod settings;
 mod ui;
 
 use std::path::{Path, PathBuf};
@@ -65,9 +66,16 @@ pub enum AppCommand {
     /// 配置文件被修改
     ConfigChanged,
     ResetPosition,
-    OpenSettings,
+    /// 打开设置窗口（已经打开就切到前台）
+    OpenSettingsWindow,
+    /// 用记事本打开 config.toml
+    OpenConfigFile,
     /// 托盘复选项被点击（muda 已经切换了勾选状态）
     AutostartToggled,
+    /// 设置窗口里切换开机自启
+    SetAutostart(bool),
+    /// 设置窗口开始 / 结束录制热键：期间暂时注销全局热键
+    HotkeyRecording(bool),
     PauseToggled,
     ClearHistory,
     Quit,
@@ -99,6 +107,9 @@ fn parse_hotkey(s: &str) -> Result<HotKey, String> {
         .map_err(|e| format!("热键「{s}」格式不对：{e}"))
 }
 
+/// 设置窗口的句柄和视图（弱引用：窗口关闭后视图被释放）
+type SettingsWindow = (AnyWindowHandle, WeakEntity<settings::SettingsView>);
+
 /// 托盘里需要在运行时更新的菜单项
 struct TrayItems {
     show: MenuItem,
@@ -114,7 +125,7 @@ fn build_tray(
     let show = MenuItem::new(format!("显示 Tessel\t{hotkey_label}"), true, None);
     let pause = CheckMenuItem::new("暂停记录", true, false, None);
     let autostart = CheckMenuItem::new("开机自动启动", true, win::autostart_enabled(), None);
-    let settings = MenuItem::new("打开设置文件…", true, None);
+    let settings = MenuItem::new("设置…", true, None);
     let reset = MenuItem::new("重置窗口位置", true, None);
     let clear = MenuItem::new("清空历史（保留收藏）…", true, None);
     let quit = MenuItem::new("退出", true, None);
@@ -138,7 +149,7 @@ fn build_tray(
         (show.id().clone(), None),
         (pause.id().clone(), Some(AppCommand::PauseToggled)),
         (autostart.id().clone(), Some(AppCommand::AutostartToggled)),
-        (settings.id().clone(), Some(AppCommand::OpenSettings)),
+        (settings.id().clone(), Some(AppCommand::OpenSettingsWindow)),
         (reset.id().clone(), Some(AppCommand::ResetPosition)),
         (clear.id().clone(), Some(AppCommand::ClearHistory)),
         (quit.id().clone(), Some(AppCommand::Quit)),
@@ -209,6 +220,14 @@ struct Hotkeys {
 }
 
 impl Hotkeys {
+    /// 暂时注销（录制新热键期间），之后用 `apply` 恢复
+    fn suspend(&mut self) {
+        if let Some(old) = self.current.take() {
+            let _ = self.manager.unregister(old);
+        }
+        self.active_id.store(0, Ordering::Relaxed);
+    }
+
     fn apply(&mut self, spec: &str) -> Result<(), String> {
         let hotkey = parse_hotkey(spec)?;
         if self.current == Some(hotkey) {
@@ -228,11 +247,32 @@ impl Hotkeys {
 }
 
 fn main() {
-    // 单实例：如果已经有一个在运行，通知它显示出来，然后自己退出
-    let Some(show_requests) = win::acquire_single_instance() else {
+    // Velopack 安装 / 更新 / 卸载时会带特殊参数启动本程序执行钩子，必须放在最前面
+    // （这种情况下它会直接退出进程，不会走到后面的逻辑）。直接运行 exe 时这里什么都不做。
+    velopack::VelopackApp::build()
+        // 卸载前去掉开机自启，否则卸载后开机还会去启动一个已不存在的程序。
+        // 数据目录（%LOCALAPPDATA%\Tessel）不在安装目录里，卸载不会删除用户的历史。
+        .on_before_uninstall_fast_callback(|_| {
+            let _ = win::set_autostart(false);
+        })
+        .run();
+
+    // 单实例：如果已经有一个在运行，通知它显示出来，然后自己退出。
+    // 指定了 TESSEL_DATA_DIR 时按数据目录区分实例，测试实例不会和正式实例互相干扰。
+    let instance_key = match std::env::var_os("TESSEL_DATA_DIR") {
+        Some(dir) => {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            dir.hash(&mut h);
+            format!(".{:016x}", h.finish())
+        }
+        None => String::new(),
+    };
+    let Some(show_requests) = win::acquire_single_instance(&instance_key) else {
         return;
     };
     let start_hidden = std::env::args().any(|a| a == "--background");
+    let open_settings = std::env::args().any(|a| a == "--settings");
 
     let (tx, rx) = async_channel::unbounded::<AppCommand>();
 
@@ -399,6 +439,7 @@ fn main() {
                 cx.new(|cx| {
                     ui::Popup::new(
                         hwnd,
+                        tx.clone(),
                         ui_store,
                         paused.clone(),
                         ui_config,
@@ -421,47 +462,98 @@ fn main() {
             ));
 
             // 双击启动时直接弹出，让用户知道它已经在运行
-            if !start_hidden {
+            if open_settings {
+                let _ = tx.try_send(AppCommand::OpenSettingsWindow);
+            } else if !start_hidden {
                 let _ = tx.try_send(AppCommand::Show(Instant::now()));
             }
 
             let config_path = Config::path(&dir);
+            let cmd_tx = tx.clone();
             cx.spawn(async move |cx| {
                 // 托盘对象必须活到进程结束
                 let _tray = tray;
+                // 设置窗口：关闭后视图被释放，WeakEntity 升级失败即表示已关闭
+                let mut settings_win: Option<SettingsWindow> = None;
                 while let Ok(cmd) = rx.recv().await {
+                    let live_settings = settings_win
+                        .as_ref()
+                        .and_then(|(h, e)| e.upgrade().map(|e| (*h, e)));
                     match cmd {
                         AppCommand::Quit => {
                             cx.update(|cx| cx.quit());
                             break;
                         }
                         AppCommand::ConfigChanged => {
-                            let result = Config::load_or_create(&dir).and_then(|new| {
-                                hotkeys.apply(&new.hotkey).map(|_| new)
-                            });
+                            // 文件本身有错才整体拒绝；热键注册失败（被占用）只是警告，其余设置照常生效
+                            let result = Config::load_or_create(&dir);
+                            let warning = result
+                                .as_ref()
+                                .ok()
+                                .and_then(|new| hotkeys.apply(&new.hotkey).err());
+                            if let Some(w) = &warning {
+                                log_line(format!("[config] {w}"));
+                            }
+                            match &result {
+                                Ok(new) => {
+                                    log_line(format!("[config] 已重新加载（热键 {}）", new.hotkey));
+                                    if let Some(items) = &tray_items {
+                                        items.show.set_text(format!("显示 Tessel\t{}", new.hotkey));
+                                    }
+                                    if let Ok(mut shared) = shared_config.write() {
+                                        *shared = new.clone();
+                                    }
+                                }
+                                Err(err) => log_line(format!("[config] {err}")),
+                            }
+                            if let Some((handle, view)) = &live_settings {
+                                let result = result.clone();
+                                let warning = warning.clone();
+                                view.update(cx, |this, cx| {
+                                    this.on_config_result(result, warning, cx)
+                                });
+                                // 主题可能变了，设置窗口也要重画
+                                let _ = handle.update(cx, |_, window, _| window.refresh());
+                            }
                             let _ = window_handle.update(cx, |_, window, cx| {
                                 popup.update(cx, |this, cx| match result {
                                     Ok(new) => {
-                                        log_line(format!("[config] 已重新加载（热键 {}）", new.hotkey));
-                                        if let Some(items) = &tray_items {
-                                            items
-                                                .show
-                                                .set_text(format!("显示 Tessel\t{}", new.hotkey));
-                                        }
-                                        if let Ok(mut shared) = shared_config.write() {
-                                            *shared = new.clone();
-                                        }
                                         this.apply_config(new, window, cx);
-                                        this.set_status("设置已更新".into(), cx);
+                                        if let Some(w) = warning {
+                                            this.set_config_error(w, cx);
+                                        }
                                     }
-                                    Err(err) => {
-                                        log_line(format!("[config] {err}"));
-                                        this.set_config_error(err, cx);
-                                    }
+                                    Err(err) => this.set_config_error(err, cx),
                                 });
                             });
                         }
-                        AppCommand::OpenSettings => {
+                        AppCommand::OpenSettingsWindow => {
+                            if let Some((handle, _)) = &live_settings {
+                                let _ = handle.update(cx, |_, window, _| {
+                                    if let Ok(RawWindowHandle::Win32(h)) =
+                                        window.window_handle().map(|h| h.as_raw())
+                                    {
+                                        win::show_and_focus(h.hwnd.get());
+                                    }
+                                });
+                            } else {
+                                let config = shared_config
+                                    .read()
+                                    .map(|c| c.clone())
+                                    .unwrap_or_default();
+                                let opened = cx.update(|cx| {
+                                    settings::open(
+                                        dir.clone(),
+                                        cmd_tx.clone(),
+                                        config,
+                                        win::autostart_enabled(),
+                                        cx,
+                                    )
+                                });
+                                settings_win = opened.map(|(h, e)| (h, e.downgrade()));
+                            }
+                        }
+                        AppCommand::OpenConfigFile => {
                             // 记事本一定存在；.toml 不一定关联了编辑器
                             if let Err(err) = std::process::Command::new("notepad.exe")
                                 .arg(&config_path)
@@ -470,12 +562,35 @@ fn main() {
                                 log_line(format!("[error] 无法打开设置文件：{err}"));
                             }
                         }
-                        AppCommand::AutostartToggled => {
+                        AppCommand::AutostartToggled | AppCommand::SetAutostart(_) => {
+                            let want = match cmd {
+                                AppCommand::SetAutostart(want) => want,
+                                _ => tray_items
+                                    .as_ref()
+                                    .is_some_and(|t| t.autostart.is_checked()),
+                            };
+                            if let Err(err) = win::set_autostart(want) {
+                                log_line(format!("[error] 设置开机自启失败：{err}"));
+                            }
+                            // 以注册表的实际状态为准，同步托盘和设置窗口
+                            let actual = win::autostart_enabled();
                             if let Some(items) = &tray_items {
-                                let want = items.autostart.is_checked();
-                                if let Err(err) = win::set_autostart(want) {
-                                    log_line(format!("[error] 设置开机自启失败：{err}"));
-                                    items.autostart.set_checked(!want);
+                                items.autostart.set_checked(actual);
+                            }
+                            if let Some((_, view)) = &live_settings {
+                                view.update(cx, |this, cx| this.set_autostart_state(actual, cx));
+                            }
+                        }
+                        AppCommand::HotkeyRecording(recording) => {
+                            if recording {
+                                hotkeys.suspend();
+                            } else {
+                                let spec = shared_config
+                                    .read()
+                                    .map(|c| c.hotkey.clone())
+                                    .unwrap_or_default();
+                                if let Err(err) = hotkeys.apply(&spec) {
+                                    log_line(format!("[warn] {err}"));
                                 }
                             }
                         }
@@ -491,6 +606,9 @@ fn main() {
                                 "确定要清空所有未收藏的剪贴板历史吗？\n收藏的内容会保留。此操作无法撤销。",
                             ) {
                                 popup.update(cx, |this, cx| this.clear_history(cx));
+                                if let Some((_, view)) = &live_settings {
+                                    view.update(cx, |this, cx| this.refresh_storage(cx));
+                                }
                             }
                         }
                         cmd => {

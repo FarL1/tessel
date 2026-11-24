@@ -10,3 +10,6 @@
 
 # 本机专用的 cargo 配置（如自定义 target-dir）
 /.cargo/config.toml
+
+# 安装包产物（scripts/package.ps1）
+/dist/

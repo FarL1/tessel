@@ -145,3 +145,22 @@ impl Palette {
 pub fn parse_hex_color(s: &str) -> Option<Hsla> {
     parse_hex_rgba(s).map(c)
 }
+
+/// 把组件库（gpui-kit）的主色换成品牌色：开关、主按钮、焦点环等。
+/// gpui-kit 切换深浅色时会重置主题颜色，所以每次切换主题后都要调用。
+pub fn apply_brand(cx: &mut gpui_kit::App) {
+    use gpui_kit::component::Theme;
+    let dark = Theme::global(cx).is_dark();
+    let p = Palette::new(dark);
+    let shade = |delta: f32| {
+        let mut c = p.accent;
+        c.l = (c.l + delta).clamp(0.0, 1.0);
+        c
+    };
+    let theme = Theme::global_mut(cx);
+    theme.primary = if dark { shade(-0.12) } else { p.accent };
+    theme.primary_hover = if dark { shade(-0.06) } else { shade(0.05) };
+    theme.primary_active = if dark { shade(-0.16) } else { shade(-0.06) };
+    theme.primary_foreground = gpui_kit::white();
+    theme.ring = p.accent;
+}

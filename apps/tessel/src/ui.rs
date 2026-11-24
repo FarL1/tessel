@@ -15,7 +15,7 @@ use tessel_core::time::{now_ms, relative as relative_time};
 use tessel_core::{Clip, Config, Counts, Filter, Kind, Store, ThemePref};
 
 use crate::design::{self, Palette, parse_hex_color};
-use crate::{debug_log, log_line, win};
+use crate::{AppCommand, debug_log, log_line, win};
 
 actions!(
     clip_popup,
@@ -29,7 +29,8 @@ actions!(
         PastePlainText,
         TogglePin,
         DeleteClip,
-        OpenClip
+        OpenClip,
+        OpenSettings
     ]
 );
 
@@ -59,6 +60,7 @@ pub fn bind_keys(cx: &mut App) {
             KeyBinding::new("ctrl-p", TogglePin, c),
             KeyBinding::new("shift-delete", DeleteClip, c),
             KeyBinding::new("ctrl-o", OpenClip, c),
+            KeyBinding::new("ctrl-,", OpenSettings, c),
         ]);
     }
     cx.bind_keys(bindings);
@@ -66,6 +68,8 @@ pub fn bind_keys(cx: &mut App) {
 
 pub struct Popup {
     hwnd: isize,
+    /// 给主线程发命令（打开设置窗口等）
+    tx: async_channel::Sender<AppCommand>,
     visible: bool,
     /// 弹出前的前台窗口，粘贴时切回它
     prev_foreground: Option<isize>,
@@ -99,8 +103,10 @@ pub struct Popup {
 }
 
 impl Popup {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         hwnd: isize,
+        tx: async_channel::Sender<AppCommand>,
         store: Store,
         paused: Arc<AtomicBool>,
         config: Config,
@@ -137,12 +143,14 @@ impl Popup {
             cx.observe_window_appearance(window, |this, window, cx| {
                 if this.config.theme == ThemePref::System {
                     Theme::sync_system_appearance(Some(window), cx);
+                    design::apply_brand(cx);
                 }
             }),
         ];
 
         let mut this = Self {
             hwnd,
+            tx,
             visible: false,
             prev_foreground: None,
             store,
@@ -180,6 +188,7 @@ impl Popup {
             ThemePref::Light => Theme::change(ThemeMode::Light, Some(window), cx),
             ThemePref::Dark => Theme::change(ThemeMode::Dark, Some(window), cx),
         }
+        design::apply_brand(cx);
     }
 
     /// 配置文件重新加载后调用
@@ -524,6 +533,16 @@ impl Popup {
         self.refresh(cx);
     }
 
+    fn on_open_settings(&mut self, _: &OpenSettings, _: &mut Window, cx: &mut Context<Self>) {
+        self.open_settings(cx);
+    }
+
+    fn open_settings(&mut self, cx: &mut Context<Self>) {
+        // 先隐藏弹窗再打开设置窗口（弹窗是置顶的，不收起会挡住设置窗口）
+        self.hide(false, cx);
+        let _ = self.tx.try_send(AppCommand::OpenSettingsWindow);
+    }
+
     fn on_open(&mut self, _: &OpenClip, _: &mut Window, cx: &mut Context<Self>) {
         let Some(clip) = self.items.get(self.selected) else {
             return;
@@ -752,6 +771,25 @@ impl Popup {
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| this.toggle_pause(cx)),
                     ),
+            )
+            .child(
+                div()
+                    .id("open-settings")
+                    .occlude()
+                    .flex_none()
+                    .size(px(30.))
+                    .rounded(design::RADIUS_MD)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .text_color(p.text_muted)
+                    .hover(move |s| s.bg(p.hover).text_color(p.text))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| this.open_settings(cx)),
+                    )
+                    .child(Icon::new(IconName::Settings).small()),
             )
     }
 
@@ -1176,7 +1214,7 @@ impl Popup {
                         .gap_1()
                         .text_color(rgb(0xDC2626))
                         .child(Icon::new(IconName::TriangleAlert).xsmall())
-                        .child(div().truncate().child(format!("设置未生效 · {err}"))),
+                        .child(div().truncate().child(err.clone())),
                 ),
                 (None, Some(status)) => {
                     d.child(div().text_color(p.accent_text).child(status.clone()))
@@ -1245,6 +1283,7 @@ impl Render for Popup {
             .on_action(cx.listener(Self::on_toggle_pin))
             .on_action(cx.listener(Self::on_delete))
             .on_action(cx.listener(Self::on_open))
+            .on_action(cx.listener(Self::on_open_settings))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.on_key_down(event, cx);
             }))

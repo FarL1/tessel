@@ -49,6 +49,26 @@ pub enum ThemePref {
     Dark,
 }
 
+impl ThemePref {
+    pub const ALL: [ThemePref; 3] = [ThemePref::System, ThemePref::Light, ThemePref::Dark];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThemePref::System => "system",
+            ThemePref::Light => "light",
+            ThemePref::Dark => "dark",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemePref::System => "跟随系统",
+            ThemePref::Light => "浅色",
+            ThemePref::Dark => "深色",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -105,8 +125,8 @@ impl Config {
                 .span()
                 .map(|span| text[..span.start.min(text.len())].matches('\n').count() + 1);
             match line {
-                Some(line) => format!("第 {line} 行：{}", e.message()),
-                None => e.message().to_string(),
+                Some(line) => format!("config.toml 第 {line} 行有误：{}", e.message()),
+                None => format!("config.toml 有误：{}", e.message()),
             }
         })?;
         if config.max_items < 10 {
@@ -114,6 +134,38 @@ impl Config {
         }
         config.hotkey = config.hotkey.trim().to_string();
         Ok(config)
+    }
+
+    /// 写回配置文件：只修改各项的值，保留文件里的注释和用户自己的排版。
+    /// 先写临时文件再重命名，避免写到一半时被读到（或断电）导致文件损坏。
+    pub fn save(&self, data_dir: &Path) -> Result<(), String> {
+        use toml_edit::{Array, DocumentMut, value};
+
+        let path = Self::path(data_dir);
+        let existing = std::fs::read_to_string(&path).unwrap_or_else(|_| DEFAULT_FILE.into());
+        let mut doc: DocumentMut = existing
+            .parse()
+            .or_else(|_| DEFAULT_FILE.parse())
+            .map_err(|e| format!("无法解析配置文件：{e}"))?;
+
+        doc["hotkey"] = value(self.hotkey.as_str());
+        doc["max_items"] = value(self.max_items as i64);
+        doc["auto_paste"] = value(self.auto_paste);
+        doc["theme"] = value(self.theme.as_str());
+        let mut apps = Array::new();
+        for app in &self.ignored_apps {
+            apps.push(app.as_str());
+        }
+        for item in apps.iter_mut() {
+            item.decor_mut().set_prefix("\n    ");
+        }
+        apps.set_trailing("\n");
+        apps.set_trailing_comma(true);
+        doc["ignored_apps"] = value(apps);
+
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, doc.to_string()).map_err(|e| format!("无法写入配置文件：{e}"))?;
+        std::fs::rename(&tmp, &path).map_err(|e| format!("无法写入配置文件：{e}"))
     }
 
     /// `exe_path` 可以是完整路径或文件名
@@ -147,6 +199,25 @@ mod tests {
     }
 
     #[test]
+    fn save_keeps_comments_and_roundtrips() {
+        let dir = std::env::temp_dir().join(format!("tessel-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = std::fs::remove_file(Config::path(&dir));
+        let mut c = Config::load_or_create(&dir).unwrap();
+        c.hotkey = "Ctrl+Shift+V".into();
+        c.max_items = 20000;
+        c.auto_paste = false;
+        c.theme = ThemePref::Dark;
+        c.ignored_apps = vec!["KeePassXC.exe".into(), "微信.exe".into()];
+        c.save(&dir).unwrap();
+
+        let text = std::fs::read_to_string(Config::path(&dir)).unwrap();
+        assert!(text.contains("# 唤起弹窗的全局热键"), "注释应保留");
+        assert_eq!(Config::parse(&text).unwrap(), c);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn partial_file_uses_defaults() {
         let c = Config::parse("theme = \"dark\"\n").unwrap();
         assert_eq!(c.theme, ThemePref::Dark);
@@ -160,7 +231,7 @@ mod tests {
 max_items = \"many\"",
         )
         .unwrap_err();
-        assert!(err.starts_with("第 2 行"), "{err}");
+        assert!(err.contains("第 2 行"), "{err}");
         assert!(Config::parse("max_items = 1").is_err());
         assert!(Config::parse("unknown_key = 1").is_err());
         assert!(Config::parse("theme = \"pink\"").is_err());

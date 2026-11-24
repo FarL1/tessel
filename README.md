@@ -25,6 +25,15 @@
 
 名字的由来：Tessel 源自 *tessellation*（镶嵌）。每一次复制都是一块瓷砖，拼起来就是你的工作轨迹。图标里那块被取出来的瓷砖，就是你正要粘贴的那一条。
 
+## 安装
+
+运行 `Tessel.App-win-Setup.exe` 即可（按当前用户安装，不需要管理员权限）：
+
+- 安装到 `%LOCALAPPDATA%\Tessel.App`，创建桌面和开始菜单快捷方式
+- 在"设置 → 应用"里可以卸载；卸载会关闭开机自启，**历史数据会保留**（`%LOCALAPPDATA%\Tessel`，不需要可以手动删除）
+
+自己打包：先 `dotnet tool install -g vpk --version 1.2.161`，再运行 `scripts\package.ps1`，产物在 `dist\`。
+
 ## 文档
 
 - 调研报告：[docs/research.md](docs/research.md)
@@ -39,7 +48,7 @@
 ```sh
 cargo run -p tessel                                  # 运行（调试版，带控制台日志；TESSEL_DEBUG=1 输出更详细的日志）
 cargo test -p tessel-core -p tessel-clipboard        # 单元测试
-powershell -ExecutionPolicy Bypass -File scripts\install-local.ps1   # 编译 release 并安装到本机、创建桌面快捷方式
+powershell -ExecutionPolicy Bypass -File scripts\package.ps1        # 编译 release 并生成安装包 dist\Tessel.App-win-Setup.exe
 cargo run -p icon-gen --release                      # 修改 assets/brand/*.svg 后重新生成 PNG / ICO
 ```
 
@@ -57,7 +66,9 @@ cargo run -p icon-gen --release                      # 修改 assets/brand/*.svg
 
 ## 设置
 
-设置就是数据目录里的 `config.toml`（托盘菜单 →"打开设置文件…"），**保存后自动生效**：
+打开方式：托盘菜单 →"设置…"、弹窗右上角的齿轮，或者在弹窗里按 `Ctrl+,`。
+
+设置窗口读写的就是数据目录里的 `config.toml`，也可以直接用文本编辑器改，**保存后自动生效**，注释会保留：
 
 | 项 | 默认 | 说明 |
 |---|---|---|
@@ -69,7 +80,7 @@ cargo run -p icon-gen --release                      # 修改 assets/brand/*.svg
 
 写错时会保留原来的设置，并在弹窗底部提示出错的行号。
 
-托盘菜单里还有：暂停记录、开机自动启动、重置窗口位置、清空历史（保留收藏）。
+开机自动启动在设置窗口和托盘菜单里都能切换。托盘菜单里还有：暂停记录、重置窗口位置、清空历史（保留收藏）。
 
 ## 许可证
 

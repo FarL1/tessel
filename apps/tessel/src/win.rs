@@ -257,9 +257,11 @@ impl ShowRequests {
 
 /// 单实例：第一个实例返回 `Some`，用来接收之后的"请显示"请求；
 /// 已经有实例在运行时，通知它显示出来并返回 `None`（调用方应直接退出）。
-pub fn acquire_single_instance() -> Option<ShowRequests> {
+/// `instance_key`：区分不同数据目录的实例（开发测试时可以和正式实例同时运行），默认为空。
+pub fn acquire_single_instance(instance_key: &str) -> Option<ShowRequests> {
+    let name = windows::core::HSTRING::from(format!(r"Local\Tessel.ShowRequest{instance_key}"));
     unsafe {
-        let event = CreateEventW(None, false, false, w!(r"Local\Tessel.ShowRequest")).ok()?;
+        let event = CreateEventW(None, false, false, &name).ok()?;
         if GetLastError() == ERROR_ALREADY_EXISTS {
             // 我们是用户刚启动的进程，拥有前台权限；把它让给已经在运行的那个实例
             let _ = AllowSetForegroundWindow(ASFW_ANY);
