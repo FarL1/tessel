@@ -24,20 +24,23 @@ Push-Location $repo
 try {
     if (-not $NoBuild) {
         Write-Host '==> 编译 release 版'
-        cargo build -p tessel --release
+        cargo build -p tessel -p tessel-cli --release
         if ($LASTEXITCODE -ne 0) { throw '编译失败' }
     }
 
     $meta = cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
     $version = ($meta.packages | Where-Object name -eq 'tessel').version
     $built = Join-Path $meta.target_directory 'release\tessel.exe'
-    if (-not (Test-Path $built)) { throw "找不到编译产物：$built" }
+    $cli = Join-Path $meta.target_directory 'release\tessel-cli.exe'
+    foreach ($f in $built, $cli) {
+        if (-not (Test-Path $f)) { throw "找不到编译产物：$f" }
+    }
 
-    # 发布目录里只放需要分发的文件
+    # 发布目录里只放需要分发的文件（桌面端 + 命令行工具 + 许可证）
     $publish = Join-Path $meta.target_directory 'package\publish'
     Remove-Item $publish -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $publish | Out-Null
-    Copy-Item $built $publish
+    Copy-Item $built, $cli $publish
     Copy-Item LICENSE-MIT, LICENSE-APACHE $publish
 
     Write-Host "==> 打包 Tessel $version"

@@ -22,7 +22,7 @@ use crate::time::now_ms;
 pub type Result<T> = rusqlite::Result<T>;
 
 /// 单条文本最多保存的字符数（再长的内容会被截断）
-const MAX_TEXT_CHARS: usize = 1_000_000;
+pub(crate) const MAX_TEXT_CHARS: usize = 1_000_000;
 /// 写入多少条之后做一次清理
 const PRUNE_EVERY: u32 = 50;
 /// 默认最多保留的未收藏记录数
@@ -68,6 +68,19 @@ CREATE TRIGGER IF NOT EXISTS clips_ad AFTER DELETE ON clips BEGIN
     VALUES ('delete', old.seq, substr(old.content, 1, 20000));
 END;
 ";
+
+/// 去重用的内容哈希：文本类按"类型 + 内容"，图片按 PNG 字节
+pub(crate) fn text_hash(kind: Kind, content: &str) -> String {
+    let mut h = blake3::Hasher::new();
+    h.update(kind.as_str().as_bytes());
+    h.update(&[0]);
+    h.update(content.as_bytes());
+    h.finalize().to_hex().to_string()
+}
+
+pub(crate) fn image_hash(png: &[u8]) -> String {
+    blake3::hash(png).to_hex().to_string()
+}
 
 /// 全文索引里一条记录的文本。`row` 是触发器里的 `new.` / `old.`，迁移时为空。
 /// 插入和删除必须用完全相同的表达式，否则外部内容表的索引会损坏。
@@ -154,8 +167,8 @@ impl Counts {
 }
 
 pub struct Store {
-    conn: Connection,
-    images_dir: PathBuf,
+    pub(crate) conn: Connection,
+    pub(crate) images_dir: PathBuf,
     inserts_since_prune: u32,
     keep: usize,
 }
@@ -236,14 +249,8 @@ impl Store {
         };
 
         let hash = match &image {
-            Some((png, ..)) => blake3::hash(png).to_hex().to_string(),
-            None => {
-                let mut h = blake3::Hasher::new();
-                h.update(kind.as_str().as_bytes());
-                h.update(&[0]);
-                h.update(content.as_bytes());
-                h.finalize().to_hex().to_string()
-            }
+            Some((png, ..)) => image_hash(png),
+            None => text_hash(kind, &content),
         };
 
         // 文件路径里的中文也能用拼音搜到
@@ -413,11 +420,7 @@ impl Store {
         }
         let text: String = text.chars().take(MAX_TEXT_CHARS).collect();
         let (kind, lang) = classify_text(&text);
-        let mut h = blake3::Hasher::new();
-        h.update(kind.as_str().as_bytes());
-        h.update(&[0]);
-        h.update(text.as_bytes());
-        let hash = h.finalize().to_hex().to_string();
+        let hash = text_hash(kind, &text);
 
         let tx = self.conn.transaction()?;
         let current: Option<(i64, String)> = tx

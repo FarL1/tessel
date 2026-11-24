@@ -509,6 +509,34 @@ fn hdrop_bytes(files: &[&str]) -> Vec<u8> {
     bytes
 }
 
+/// 没有自己窗口的程序（命令行工具）写剪贴板：临时建一个只收消息的窗口当所有者。
+/// 所有者为空时 `SetClipboardData` 可能失败（见 EmptyClipboard 的文档）。
+pub fn write_standalone(content: WriteContent) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("STATIC"),
+            w!("Tessel CLI"),
+            WS_OVERLAPPED,
+            0,
+            0,
+            0,
+            0,
+            Some(HWND_MESSAGE),
+            None,
+            None,
+            None,
+        )
+    }
+    .map_err(|e| e.to_string())?;
+    let result = write(Some(hwnd.0 as isize), content);
+    unsafe {
+        let _ = DestroyWindow(hwnd);
+    }
+    result
+}
+
 pub fn write(owner: Option<isize>, content: WriteContent) -> Result<(), String> {
     // 先准备好所有数据，再打开剪贴板，尽量缩短占用时间
     let items: Vec<(u32, Vec<u8>)> = match content {

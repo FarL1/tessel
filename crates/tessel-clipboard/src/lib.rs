@@ -49,6 +49,19 @@ pub enum WriteContent<'a> {
     ImagePng(&'a [u8]),
 }
 
+/// 没有窗口的程序（命令行工具）写入剪贴板
+pub fn write_standalone(content: WriteContent) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        windows::write_standalone(content)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = content;
+        Err("not implemented on this platform".into())
+    }
+}
+
 /// 写入系统剪贴板。`owner` 是剪贴板所有者窗口（可选）。
 pub fn write(owner: Option<isize>, content: WriteContent) -> Result<(), String> {
     #[cfg(windows)]

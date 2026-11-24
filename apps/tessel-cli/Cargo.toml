@@ -1,0 +1,25 @@
+[package]
+name = "tessel-cli"
+description = "Tessel command line: search, read, copy and back up your clipboard history"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "tessel-cli"
+path = "src/main.rs"
+
+[dependencies]
+tessel-core.workspace = true
+tessel-clipboard.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap = { version = "4.5", features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Globalization", "Win32_System_SystemInformation"] }
+
+[lints]
+workspace = true

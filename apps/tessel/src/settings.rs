@@ -7,12 +7,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui_kit::base::{h_flex, v_flex};
+use gpui_kit::component::Disableable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, TitleBar};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
+use tessel_core::backup::ExportScope;
 use tessel_core::i18n::tr;
 use tessel_core::trf;
 use tessel_core::{Config, LanguagePref, ThemePref};
@@ -67,6 +69,10 @@ pub struct SettingsView {
     error: Option<SharedString>,
     /// 一次性提示（例如"新热键被占用，已恢复为旧热键"），不会被配置重载清掉，下次录制时清除
     notice: Option<SharedString>,
+    /// 操作成功的提示（导入、导出完成），蓝色显示
+    info: Option<SharedString>,
+    /// 正在导入或导出：按钮暂时不可用
+    busy: bool,
     storage: String,
     logo: Arc<Image>,
     _subscriptions: Vec<Subscription>,
@@ -129,6 +135,8 @@ impl SettingsView {
             rendered_english: None,
             error: None,
             notice: None,
+            info: None,
+            busy: false,
             storage,
             logo: Arc::new(Image::from_bytes(
                 ImageFormat::Png,
@@ -206,6 +214,134 @@ impl SettingsView {
     }
 
     // ── 热键录制 ──
+
+    // ── 导入导出 ──
+
+    /// 导出：选保存位置，在后台写文件
+    fn export(&mut self, scope: ExportScope, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let t = crate::win::local_time();
+        let name = match scope {
+            ExportScope::All => format!(
+                "{}-{:04}{:02}{:02}.jsonl",
+                tr("Tessel 备份", "Tessel backup"),
+                t.year,
+                t.month,
+                t.day
+            ),
+            ExportScope::Kept => format!(
+                "{}-{:04}{:02}{:02}.jsonl",
+                tr("Tessel 收藏和片段", "Tessel pinned and snippets"),
+                t.year,
+                t.month,
+                t.day
+            ),
+        };
+        let start_dir = documents_dir();
+        let picked = cx.prompt_for_new_path(&start_dir, Some(&name));
+        let dir = self.dir.clone();
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(path))) = picked.await else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.busy = true;
+                this.info = Some(tr("正在导出…", "Exporting…").into());
+                cx.notify();
+            });
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let store = tessel_core::Store::open(&dir).map_err(|e| e.to_string())?;
+                    let file = std::fs::File::create(&path)
+                        .map_err(|e| trf!("无法创建文件：{e}", "Could not create the file: {e}"))?;
+                    let mut out = std::io::BufWriter::new(file);
+                    let n = store.export(scope, env!("CARGO_PKG_VERSION"), &mut out)?;
+                    Ok::<_, String>((n, path))
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.busy = false;
+                match result {
+                    Ok((n, path)) => {
+                        let path = path.display();
+                        this.info = Some(
+                            trf!("已导出 {n} 条到 {path}", "Exported {n} items to {path}").into(),
+                        );
+                    }
+                    Err(err) => {
+                        this.info = None;
+                        this.notice = Some(err.into());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 导入：选文件，在后台合并进历史
+    fn import(&mut self, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(tr("导入", "Import").into()),
+        });
+        let dir = self.dir.clone();
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(paths))) = picked.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.busy = true;
+                this.info = Some(tr("正在导入…", "Importing…").into());
+                cx.notify();
+            });
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let file = std::fs::File::open(&path)
+                        .map_err(|e| trf!("无法打开文件：{e}", "Could not open the file: {e}"))?;
+                    let mut store = tessel_core::Store::open(&dir).map_err(|e| e.to_string())?;
+                    store.import(std::io::BufReader::new(file))
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.busy = false;
+                match result {
+                    Ok(r) => {
+                        let (added, merged, skipped) = (r.added, r.merged, r.skipped);
+                        let mut text = trf!(
+                            "导入完成：新增 {added} 条，{merged} 条已存在（已合并收藏、片段和备注）",
+                            "Imported: {added} new, {merged} already present (pins, snippets and notes merged)"
+                        );
+                        if skipped > 0 {
+                            text.push_str(&trf!("，{skipped} 行无法识别已跳过", "; {skipped} unreadable lines skipped"));
+                        }
+                        this.info = Some(text.into());
+                        this.refresh_storage(cx);
+                        // 弹窗下次显示时会重新查询；正在显示的话立刻刷新
+                        let _ = this.tx.try_send(AppCommand::ClipboardChanged { notify: false });
+                    }
+                    Err(err) => {
+                        this.info = None;
+                        this.notice = Some(err.into());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
 
     fn start_recording(
         &mut self,
@@ -344,6 +480,14 @@ impl SettingsView {
         // 按名字删除：文件可能在外部被改过，序号不可靠
         self.change(cx, |c| c.ignored_apps.retain(|app| *app != name));
     }
+}
+
+/// 导出时默认打开的文件夹：文档
+fn documents_dir() -> PathBuf {
+    std::env::var_os("USERPROFILE")
+        .map(|home| PathBuf::from(home).join("Documents"))
+        .filter(|p| p.exists())
+        .unwrap_or_else(std::env::temp_dir)
 }
 
 /// GPUI 的按键名 → global-hotkey 的按键名
@@ -808,10 +952,56 @@ impl Render for SettingsView {
                     &p,
                 ))
                 .child(row(
+                    tr("导出", "Export"),
+                    tr(
+                        "保存成一个文件（含图片、格式、备注），用来备份或换电脑。也可以只导出收藏和片段，分享给别人。",
+                        "Save everything (images, formatting and notes included) to one file for backup or a new PC, or only pinned items and snippets to share.",
+                    ),
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("export-all")
+                                .label(tr("导出全部…", "Export all…"))
+                                .small()
+                                .outline()
+                                .disabled(self.busy)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.export(ExportScope::All, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new("export-kept")
+                                .label(tr("只导出收藏和片段…", "Pinned & snippets…"))
+                                .small()
+                                .outline()
+                                .disabled(self.busy)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.export(ExportScope::Kept, cx)
+                                })),
+                        ),
+                    false,
+                    &p,
+                ))
+                .child(row(
+                    tr("导入", "Import"),
+                    tr(
+                        "导入 Tessel 导出的文件。已有的内容不会重复，收藏、片段和备注会合并。",
+                        "Import a file exported by Tessel. Existing items aren't duplicated; pins, snippets and notes are merged.",
+                    ),
+                    Button::new("import")
+                        .label(tr("导入…", "Import…"))
+                        .small()
+                        .outline()
+                        .disabled(self.busy)
+                        .on_click(cx.listener(|this, _, _, cx| this.import(cx))),
+                    false,
+                    &p,
+                ))
+                .child(row(
                     tr("清空历史", "Clear history"),
                     tr(
-                        "删除所有未收藏的记录，收藏的内容会保留。",
-                        "Delete every item that isn't pinned. Pinned items are kept.",
+                        "删除所有未收藏的记录，收藏的内容和片段会保留。",
+                        "Delete every item that isn't pinned. Pinned items and snippets are kept.",
                     ),
                     Button::new("clear")
                         .label(tr("清空…", "Clear…"))
@@ -866,6 +1056,27 @@ impl Render for SettingsView {
                         .child(img(self.logo.clone()).size(px(16.)))
                         .child(div().text_sm().child(tr("Tessel 设置", "Tessel Settings"))),
                 ),
+            )
+            .when_some(
+                self.info
+                    .clone()
+                    .filter(|_| self.error.is_none() && self.notice.is_none()),
+                |d, info| {
+                    d.child(
+                        h_flex()
+                            .mx_6()
+                            .mt_4()
+                            .px_3()
+                            .py_2()
+                            .gap_2()
+                            .rounded(design::RADIUS_MD)
+                            .bg(p.accent_soft)
+                            .text_xs()
+                            .text_color(p.accent_text)
+                            .child(Icon::new(IconName::Info).xsmall())
+                            .child(div().flex_1().child(info)),
+                    )
+                },
             )
             .when_some(self.error.clone().or(self.notice.clone()), |d, err| {
                 d.child(

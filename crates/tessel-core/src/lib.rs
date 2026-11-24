@@ -2,6 +2,7 @@
 //!
 //! 这个 crate **不依赖任何 UI 框架和平台 API**：桌面端、CLI、将来的移动端都复用它。
 
+pub mod backup;
 pub mod classify;
 pub mod config;
 pub mod i18n;

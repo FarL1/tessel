@@ -888,8 +888,8 @@ fn main() {
                             if win::confirm(
                                 tr("清空历史 · Tessel", "Clear history · Tessel"),
                                 tr(
-                                    "确定要清空所有未收藏的剪贴板历史吗？\n收藏的内容会保留。此操作无法撤销。",
-                                    "Delete all clipboard history that isn't pinned?\nPinned items are kept. This can't be undone.",
+                                    "确定要清空所有未收藏的剪贴板历史吗？\n收藏的内容和片段会保留。此操作无法撤销。",
+                                    "Delete all clipboard history that isn't pinned?\nPinned items and snippets are kept. This can't be undone.",
                                 ),
                             ) {
                                 popup.update(cx, |this, cx| this.clear_history(cx));
