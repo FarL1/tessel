@@ -1,0 +1,450 @@
+//! 动作菜单（Ctrl+K）：针对当前选中的记录，列出可以做的事和可用的转换。
+//!
+//! 菜单是弹窗里的一层浮层，不是独立窗口：焦点移到菜单自己的搜索框里，
+//! 键位上下文是 `ClipPopup > ActionMenu`，所以 ↑ ↓ Enter Esc 在菜单打开时作用于菜单。
+
+use gpui_kit::assets::IconName;
+use gpui_kit::base::{h_flex, v_flex};
+use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::{Icon, Sizable};
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::*;
+use tessel_core::transform::{self, Transform};
+use tessel_core::{Clip, Kind};
+
+use crate::design::{self, Palette};
+
+actions!(action_menu, [MenuPrev, MenuNext, MenuConfirm, MenuClose]);
+
+pub const CONTEXT: &str = "ActionMenu";
+
+/// 菜单打开时的键位。必须在弹窗的键位之后注册，同一深度以后注册的为准。
+pub fn bind_keys(cx: &mut App) {
+    let mut bindings = Vec::new();
+    for ctx in ["ActionMenu > Input", CONTEXT] {
+        let c = Some(ctx);
+        bindings.extend([
+            KeyBinding::new("up", MenuPrev, c),
+            KeyBinding::new("down", MenuNext, c),
+            KeyBinding::new("enter", MenuConfirm, c),
+            KeyBinding::new("escape", MenuClose, c),
+            KeyBinding::new("ctrl-k", MenuClose, c),
+        ]);
+    }
+    cx.bind_keys(bindings);
+}
+
+// 默认图标包之外用到的 Lucide 图标，只嵌入这几个
+gpui_kit::assets::icon_assets!(
+    ExtraIcons,
+    [
+        ClipboardPaste,
+        ClipboardCopy,
+        Type,
+        Braces,
+        Minimize2,
+        ShieldCheck,
+        Link,
+        Eraser,
+        TextWrap,
+        CaseUpper,
+        CaseLower,
+        Trash,
+        Command,
+    ]
+);
+
+/// 组件库自带图标 + 动作菜单额外用到的图标
+pub struct AppAssets;
+
+impl AssetSource for AppAssets {
+    fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        if let Some(bytes) = ExtraIcons.load(path)? {
+            return Ok(Some(bytes));
+        }
+        gpui_kit::assets::Assets.load(path)
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+        let mut all = gpui_kit::assets::Assets.list(path)?;
+        all.extend(ExtraIcons.list(path)?);
+        Ok(all)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MenuAction {
+    Paste,
+    PastePlain,
+    CopyOnly,
+    PastePaths,
+    Open,
+    Transform(Transform),
+    TogglePin,
+    Delete,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Group {
+    Paste,
+    Transform,
+    Manage,
+}
+
+pub struct Entry {
+    pub action: MenuAction,
+    label: SharedString,
+    /// 转换结果的预览，或者一句说明
+    detail: Option<SharedString>,
+    icon: IconName,
+    keys: &'static [&'static str],
+    group: Group,
+    /// 搜索用：小写的标题 + 关键词
+    haystack: String,
+    /// 转换的结果（执行时直接用，不再重新计算）
+    pub output: Option<String>,
+}
+
+impl Entry {
+    fn new(
+        action: MenuAction,
+        label: impl Into<SharedString>,
+        icon: IconName,
+        group: Group,
+    ) -> Self {
+        let label = label.into();
+        Self {
+            action,
+            haystack: label.to_lowercase(),
+            label,
+            detail: None,
+            icon,
+            keys: &[],
+            group,
+            output: None,
+        }
+    }
+
+    fn detail(mut self, detail: impl Into<SharedString>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    fn keys(mut self, keys: &'static [&'static str]) -> Self {
+        self.keys = keys;
+        self
+    }
+
+    fn keywords(mut self, words: &str) -> Self {
+        self.haystack.push(' ');
+        self.haystack.push_str(&words.to_lowercase());
+        self
+    }
+}
+
+/// 转换结果的单行预览。多行结果把开头几行拼起来（格式化后的 JSON 第一行只有一个 `{`）
+fn summarize(output: &str) -> String {
+    const MAX: usize = 64;
+    let lines: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let joined = lines.join(" ");
+    let mut s: String = joined.chars().take(MAX).collect();
+    if joined.chars().count() > MAX {
+        s.push('…');
+    }
+    if lines.len() > 1 {
+        s = format!("{} 行 · {s}", lines.len());
+    }
+    s
+}
+
+pub struct ActionMenu {
+    /// 菜单针对的记录
+    pub uuid: String,
+    title: String,
+    entries: Vec<Entry>,
+    /// 搜索过滤后可见的条目（`entries` 的下标）
+    visible: Vec<usize>,
+    selected: usize,
+    scroll: ScrollHandle,
+}
+
+impl ActionMenu {
+    pub fn new(clip: &Clip) -> Self {
+        use MenuAction as A;
+        let paste = Entry::new(A::Paste, "粘贴", IconName::ClipboardPaste, Group::Paste)
+            .keys(&["↵"])
+            .keywords("paste");
+        let mut entries = vec![if clip.has_rich {
+            paste.detail("保留格式")
+        } else {
+            paste
+        }];
+        if clip.has_rich {
+            entries.push(
+                Entry::new(A::PastePlain, "粘贴为纯文本", IconName::Type, Group::Paste)
+                    .keys(&["Shift", "↵"])
+                    .keywords("plain text 格式"),
+            );
+        }
+        entries.push(
+            Entry::new(
+                A::CopyOnly,
+                "只复制，不粘贴",
+                IconName::ClipboardCopy,
+                Group::Paste,
+            )
+            .detail("放到剪贴板，之后自己粘贴")
+            .keywords("copy"),
+        );
+        if clip.kind == Kind::File {
+            let n = clip.files().count();
+            entries.push(
+                Entry::new(A::PastePaths, "粘贴文件路径", IconName::Type, Group::Paste)
+                    .detail(if n > 1 {
+                        format!("{} 个路径，每行一个", n)
+                    } else {
+                        clip.files().next().unwrap_or_default().to_string()
+                    })
+                    .keywords("path text"),
+            );
+        }
+        let open = match clip.kind {
+            Kind::Link => Some(("在浏览器中打开", IconName::ExternalLink)),
+            Kind::File => Some(("在资源管理器中显示", IconName::FolderOpen)),
+            Kind::Image => Some(("用系统查看器打开", IconName::ExternalLink)),
+            _ => None,
+        };
+        if let Some((label, icon)) = open {
+            entries.push(
+                Entry::new(A::Open, label, icon, Group::Paste)
+                    .keys(&["Ctrl", "O"])
+                    .keywords("open"),
+            );
+        }
+
+        for (t, output) in transform::available(clip) {
+            let icon = match t {
+                Transform::FormatJson => IconName::Braces,
+                Transform::MinifyJson => IconName::Minimize2,
+                Transform::StripTracking => IconName::ShieldCheck,
+                Transform::UrlDecode => IconName::Link,
+                Transform::ColorHex | Transform::ColorRgb | Transform::ColorHsl => {
+                    IconName::Palette
+                }
+                Transform::TidyWhitespace => IconName::Eraser,
+                Transform::JoinLines => IconName::TextWrap,
+                Transform::Uppercase => IconName::CaseUpper,
+                Transform::Lowercase => IconName::CaseLower,
+            };
+            let mut entry = Entry::new(A::Transform(t), t.label(), icon, Group::Transform)
+                .detail(summarize(&output))
+                .keywords(t.keywords());
+            entry.output = Some(output);
+            entries.push(entry);
+        }
+
+        entries.push(
+            Entry::new(
+                A::TogglePin,
+                if clip.pinned {
+                    "取消收藏"
+                } else {
+                    "收藏"
+                },
+                if clip.pinned {
+                    IconName::StarOff
+                } else {
+                    IconName::Star
+                },
+                Group::Manage,
+            )
+            .keys(&["Ctrl", "P"])
+            .keywords("pin star"),
+        );
+        entries.push(
+            Entry::new(A::Delete, "删除", IconName::Trash, Group::Manage)
+                .keys(&["Shift", "Del"])
+                .keywords("delete remove"),
+        );
+
+        let visible = (0..entries.len()).collect();
+        Self {
+            uuid: clip.uuid.clone(),
+            title: clip.title(),
+            entries,
+            visible,
+            selected: 0,
+            scroll: ScrollHandle::new(),
+        }
+    }
+
+    pub fn set_query(&mut self, query: &str) {
+        let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        self.visible = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| terms.iter().all(|t| e.haystack.contains(t.as_str())))
+            .map(|(i, _)| i)
+            .collect();
+        self.selected = 0;
+        self.scroll.scroll_to_item(0);
+    }
+
+    pub fn move_selection(&mut self, delta: isize) {
+        let len = self.visible.len();
+        if len == 0 {
+            return;
+        }
+        self.selected = (self.selected as isize + delta).rem_euclid(len as isize) as usize;
+        self.scroll.scroll_to_item(self.selected);
+    }
+
+    pub fn select(&mut self, pos: usize) {
+        if pos < self.visible.len() {
+            self.selected = pos;
+        }
+    }
+
+    pub fn current(&self) -> Option<&Entry> {
+        self.entries.get(*self.visible.get(self.selected)?)
+    }
+
+    /// 渲染菜单浮层。`on_pick(pos)`：鼠标点了第 pos 个可见条目。
+    pub fn render(
+        &self,
+        search: &Entity<InputState>,
+        p: &Palette,
+        on_pick: impl Fn(usize, &mut Window, &mut App) + 'static,
+    ) -> impl IntoElement {
+        let p = *p;
+        let on_pick = std::rc::Rc::new(on_pick);
+        let mut rows: Vec<AnyElement> = Vec::new();
+        let mut prev_group = None;
+        for (pos, &ix) in self.visible.iter().enumerate() {
+            let e = &self.entries[ix];
+            // 分组之间的分隔线和条目放在同一个子元素里，滚动时子元素下标 = 可见条目下标
+            let new_group = prev_group.is_some_and(|g| g != e.group);
+            prev_group = Some(e.group);
+            let selected = pos == self.selected;
+            let on_pick = on_pick.clone();
+            let row = h_flex()
+                .id(("menu-entry", pos))
+                .mx_1p5()
+                .px_2()
+                .py_1p5()
+                .gap_2p5()
+                .rounded(design::RADIUS_SM)
+                .cursor_pointer()
+                .when(selected, |d| d.bg(p.selected))
+                .when(!selected, |d| d.hover(move |s| s.bg(p.hover)))
+                .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                    cx.stop_propagation();
+                    on_pick(pos, window, cx);
+                })
+                .child(Icon::new(e.icon).small().text_color(if selected {
+                    p.accent
+                } else {
+                    p.text_muted
+                }))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().text_sm().text_color(p.text).child(e.label.clone()))
+                        .when_some(e.detail.clone(), |d, detail| {
+                            d.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(p.text_faint)
+                                    .truncate()
+                                    .child(detail),
+                            )
+                        }),
+                )
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .gap_1()
+                        .children(e.keys.iter().map(|k| crate::ui::kbd(*k, &p))),
+                );
+            rows.push(
+                v_flex()
+                    .when(new_group, |d| {
+                        d.child(div().mx_3().my_1().h(px(1.)).bg(p.divider))
+                    })
+                    .child(row)
+                    .into_any_element(),
+            );
+        }
+        if rows.is_empty() {
+            rows.push(
+                div()
+                    .py_6()
+                    .text_center()
+                    .text_xs()
+                    .text_color(p.text_faint)
+                    .child("没有匹配的动作")
+                    .into_any_element(),
+            );
+        }
+
+        v_flex()
+            .id("action-menu")
+            .key_context(CONTEXT)
+            .absolute()
+            .right(px(14.))
+            .bottom(px(46.))
+            .w(px(380.))
+            .max_h(px(400.))
+            .rounded(design::RADIUS_LG)
+            .bg(p.popover)
+            .border_1()
+            .border_color(p.border)
+            .shadow_lg()
+            .overflow_hidden()
+            // 点菜单内部不要触发外层"点击空白处关闭"
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                h_flex()
+                    .px_3()
+                    .pt_2p5()
+                    .pb_1()
+                    .gap_1p5()
+                    .text_xs()
+                    .text_color(p.text_faint)
+                    .child(Icon::new(IconName::Command).xsmall())
+                    .child(div().flex_none().child("动作"))
+                    .child(div().flex_none().child("·"))
+                    .child(div().min_w_0().truncate().child(self.title.clone())),
+            )
+            .child(
+                div()
+                    .mx_2()
+                    .mb_1()
+                    .px_2()
+                    .h(px(34.))
+                    .flex()
+                    .items_center()
+                    .rounded(design::RADIUS_MD)
+                    .bg(p.search_bg)
+                    .border_1()
+                    .border_color(p.search_border)
+                    .child(Input::new(search).appearance(false).small()),
+            )
+            .child(
+                div()
+                    .id("menu-entries")
+                    .flex_1()
+                    .min_h_0()
+                    .pb_1p5()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .children(rows),
+            )
+    }
+}

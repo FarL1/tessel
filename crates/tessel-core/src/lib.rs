@@ -7,6 +7,7 @@ pub mod config;
 pub mod model;
 pub mod store;
 pub mod time;
+pub mod transform;
 
 pub use config::{Config, ThemePref};
 pub use model::{Clip, Filter, ImageInfo, Kind, NewClip, Payload, RichFormats};

@@ -13,6 +13,7 @@
 #[cfg(windows)]
 mod win;
 
+mod action_menu;
 mod design;
 mod settings;
 mod ui;
@@ -426,11 +427,12 @@ fn main() {
     }
 
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(action_menu::AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
             // 必须在 gpui_kit::init 之后：同深度的键位绑定以后注册的为准
             ui::bind_keys(cx);
+            action_menu::bind_keys(cx);
 
             // 全局热键：global-hotkey 在当前线程创建隐藏窗口接收 WM_HOTKEY，由 GPUI 的消息循环派发
             let mut hotkeys = Hotkeys {

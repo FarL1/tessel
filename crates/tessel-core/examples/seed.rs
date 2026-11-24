@@ -61,6 +61,15 @@ fn demo(store: &mut Store) {
             "https://github.com/longbridge/gpui-component",
             "Google Chrome",
         ),
+        // 动作菜单（Ctrl+K）的演示：格式化 JSON、去掉链接追踪参数
+        text(
+            r#"{"name":"Tessel","version":"0.2.0","features":["动作菜单","粘贴队列","OCR"],"sync":{"lan":true,"relay":null}}"#,
+            "Postman",
+        ),
+        text(
+            "https://www.bilibili.com/video/BV1GJ411x7h7?spm_id_from=333.1007.top_right_bar_window_history.content.click&vd_source=6f2a8c0d1e&t=42",
+            "Microsoft Edge",
+        ),
         NewClip {
             payload: Payload::Text("每一次复制，都拼进你的工作里。".into()),
             source: Some("Microsoft Word".into()),

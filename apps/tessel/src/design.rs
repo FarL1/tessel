@@ -60,6 +60,10 @@ pub struct Palette {
     pub live_bg: Hsla,
     pub live_text: Hsla,
     pub live_dot: Hsla,
+    /// 浮层（动作菜单）的底色，基本不透明
+    pub popover: Hsla,
+    /// 浮层打开时盖在弹窗上的遮罩
+    pub scrim: Hsla,
 }
 
 impl Palette {
@@ -90,6 +94,8 @@ impl Palette {
                 live_bg: c(0x34D3991F),
                 live_text: c(0x6EE7B7FF),
                 live_dot: c(0x34D399FF),
+                popover: c(0x26272DFA),
+                scrim: c(0x00000047),
             }
         } else {
             Self {
@@ -117,6 +123,8 @@ impl Palette {
                 live_bg: c(0x10B98117),
                 live_text: c(0x047857FF),
                 live_dot: c(0x10B981FF),
+                popover: c(0xFFFFFFFA),
+                scrim: c(0x0F172A1F),
             }
         }
     }

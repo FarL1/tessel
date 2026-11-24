@@ -1,0 +1,26 @@
+# 依赖更新：每周一检查一次，同类更新合并成一个 PR
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor:
+        update-types: [minor, patch]
+    ignore:
+      # 必须和打包工具 vpk 同步升级（scripts/package.ps1、release.yml），手动处理
+      - dependency-name: velopack
+      # 1.0 之前 API 变动频繁，升级要单独回归测试，手动处理
+      - dependency-name: gpui-kit
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]

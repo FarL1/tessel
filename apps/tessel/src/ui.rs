@@ -14,6 +14,7 @@ use tessel_clipboard::WriteContent;
 use tessel_core::time::{now_ms, relative as relative_time};
 use tessel_core::{Clip, Config, Counts, Filter, Kind, Store, ThemePref};
 
+use crate::action_menu::{self, ActionMenu, MenuAction};
 use crate::design::{self, Palette, parse_hex_color};
 use crate::{AppCommand, debug_log, log_line, win};
 
@@ -30,7 +31,8 @@ actions!(
         TogglePin,
         DeleteClip,
         OpenClip,
-        OpenSettings
+        OpenSettings,
+        OpenActionMenu
     ]
 );
 
@@ -61,6 +63,7 @@ pub fn bind_keys(cx: &mut App) {
             KeyBinding::new("shift-delete", DeleteClip, c),
             KeyBinding::new("ctrl-o", OpenClip, c),
             KeyBinding::new("ctrl-,", OpenSettings, c),
+            KeyBinding::new("ctrl-k", OpenActionMenu, c),
         ]);
     }
     cx.bind_keys(bindings);
@@ -99,6 +102,9 @@ pub struct Popup {
     placed_at: Option<(i32, i32)>,
     /// 用户拖动后的位置，下次唤起时沿用
     user_pos: Option<(i32, i32)>,
+    /// 打开中的动作菜单（Ctrl+K）
+    menu: Option<ActionMenu>,
+    menu_search: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -115,8 +121,17 @@ impl Popup {
         cx: &mut Context<Self>,
     ) -> Self {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("搜索剪贴板历史…"));
+        let menu_search = cx.new(|cx| InputState::new(window, cx).placeholder("搜索动作…"));
 
         let subscriptions = vec![
+            cx.subscribe_in(&menu_search, window, |this, state, event, _window, cx| {
+                if let InputEvent::Change = event
+                    && let Some(menu) = &mut this.menu
+                {
+                    menu.set_query(&state.read(cx).value());
+                    cx.notify();
+                }
+            }),
             cx.subscribe_in(&search, window, |this, state, event, _window, cx| {
                 if let InputEvent::Change = event {
                     this.query = state.read(cx).value().to_string();
@@ -136,7 +151,12 @@ impl Popup {
                     this.hide(false, cx);
                 } else if this.visible && active {
                     // GPUI 处理激活时会重置内部焦点，激活事件可能晚于 show() 到达，这里重新聚焦
-                    this.search.update(cx, |state, cx| state.focus(window, cx));
+                    let input = if this.menu.is_some() {
+                        &this.menu_search
+                    } else {
+                        &this.search
+                    };
+                    input.update(cx, |state, cx| state.focus(window, cx));
                 }
             }),
             // 主题设为"跟随系统"时，系统切换深浅色后实时更新
@@ -175,6 +195,8 @@ impl Popup {
             )),
             placed_at: None,
             user_pos: None,
+            menu: None,
+            menu_search,
             _subscriptions: subscriptions,
         };
         this.apply_theme(window, cx);
@@ -285,8 +307,10 @@ impl Popup {
     }
 
     /// 托盘点击、再次启动：只负责显示，已经显示时保持不动
+    /// 已经显示但没有被激活（唤起方没有前台权限时 SetForegroundWindow 会失败）也重新显示，
+    /// 否则弹窗既拿不到键盘，也收不到"失去激活"事件，会一直挂在那里
     pub fn show_if_hidden(&mut self, t0: Instant, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.visible {
+        if !self.visible || !window.is_window_active() {
             self.show(t0, window, cx);
         }
     }
@@ -303,6 +327,7 @@ impl Popup {
         let prev = win::foreground();
         self.prev_foreground = (prev != self.hwnd && prev != 0).then_some(prev);
         self.visible = true;
+        self.menu = None;
         self.selected = 0;
         self.filter_ix = 0;
         self.status = None;
@@ -360,6 +385,7 @@ impl Popup {
         }
         self.remember_position();
         self.visible = false;
+        self.menu = None;
         win::hide(self.hwnd);
         if restore_focus && let Some(prev) = self.prev_foreground {
             win::focus(prev);
@@ -404,7 +430,46 @@ impl Popup {
             return;
         };
         let t0 = Instant::now();
-        if let Err(err) = self.write_to_clipboard(&clip, plain) {
+        let written = self.write_to_clipboard(&clip, plain);
+        let what = format!(
+            "{}{}",
+            clip.kind.label(),
+            if plain { "（纯文本）" } else { "" }
+        );
+        self.deliver(written, &what, t0, cx);
+    }
+
+    /// 粘贴一段生成的文本（转换结果、文件路径）。Windows 剪贴板文本惯用 CRLF。
+    fn paste_text(&mut self, text: &str, what: &str, cx: &mut Context<Self>) {
+        let t0 = Instant::now();
+        let text = text.replace("\r\n", "\n").replace('\n', "\r\n");
+        let written = tessel_clipboard::write(Some(self.hwnd), WriteContent::Text(&text));
+        self.deliver(written, what, t0, cx);
+    }
+
+    /// 只复制到剪贴板，关闭弹窗，由用户自己粘贴
+    fn copy_only(&mut self, pos: usize, cx: &mut Context<Self>) {
+        let Some(clip) = self.full_clip(pos) else {
+            return;
+        };
+        match self.write_to_clipboard(&clip, false) {
+            Ok(()) => self.hide(true, cx),
+            Err(err) => {
+                self.status = Some(format!("写入剪贴板失败：{err}").into());
+                cx.notify();
+            }
+        }
+    }
+
+    /// 已经写好剪贴板之后：切回原窗口并粘贴（或者按设置只复制）
+    fn deliver(
+        &mut self,
+        written: Result<(), String>,
+        what: &str,
+        t0: Instant,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(err) = written {
             self.status = Some(format!("写入剪贴板失败：{err}").into());
             cx.notify();
             return;
@@ -424,14 +489,13 @@ impl Popup {
         win::hide(self.hwnd);
         let report = win::restore_and_paste(target);
         log_line(format!(
-            "[paste] {}{} {} → 「{}」· 切换焦点 {:.1}ms · 总耗时 {:.1}ms",
+            "[paste] {} {} → 「{}」· 切换焦点 {:.1}ms · 总耗时 {:.1}ms",
             if report.focused {
                 "✅"
             } else {
                 "❌ 无法切回目标窗口"
             },
-            if plain { "（纯文本）" } else { "" },
-            clip.kind.label(),
+            what,
             report.target_title,
             report.focus_ms,
             t0.elapsed().as_secs_f64() * 1000.0,
@@ -467,7 +531,11 @@ impl Popup {
         let key = event.keystroke.key.as_str();
         let mods = &event.keystroke.modifiers;
         debug_log(format!("[event] key_down {key:?} {mods:?}"));
-        if mods.control && key.len() == 1 && (b'1'..=b'9').contains(&key.as_bytes()[0]) {
+        if self.menu.is_none()
+            && mods.control
+            && key.len() == 1
+            && (b'1'..=b'9').contains(&key.as_bytes()[0])
+        {
             self.paste((key.as_bytes()[0] - b'1') as usize, mods.shift, cx);
             cx.stop_propagation();
         }
@@ -502,7 +570,11 @@ impl Popup {
     }
 
     fn on_toggle_pin(&mut self, _: &TogglePin, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(clip) = self.items.get(self.selected) else {
+        self.toggle_pin(self.selected, cx);
+    }
+
+    fn toggle_pin(&mut self, pos: usize, cx: &mut Context<Self>) {
+        let Some(clip) = self.items.get(pos) else {
             return;
         };
         let pinned = !clip.pinned;
@@ -522,7 +594,11 @@ impl Popup {
     }
 
     fn on_delete(&mut self, _: &DeleteClip, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(clip) = self.items.get(self.selected) else {
+        self.delete(self.selected, cx);
+    }
+
+    fn delete(&mut self, pos: usize, cx: &mut Context<Self>) {
+        let Some(clip) = self.items.get(pos) else {
             return;
         };
         if let Err(err) = self.store.delete(&clip.uuid) {
@@ -543,8 +619,107 @@ impl Popup {
         let _ = self.tx.try_send(AppCommand::OpenSettingsWindow);
     }
 
+    fn on_open_menu(&mut self, _: &OpenActionMenu, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(clip) = self.full_clip(self.selected) else {
+            return;
+        };
+        self.menu_search
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.menu = Some(ActionMenu::new(&clip));
+        self.menu_search
+            .update(cx, |state, cx| state.focus(window, cx));
+        cx.notify();
+    }
+
+    fn close_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu = None;
+        self.search.update(cx, |state, cx| state.focus(window, cx));
+        cx.notify();
+    }
+
+    fn on_menu_prev(&mut self, _: &action_menu::MenuPrev, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(menu) = &mut self.menu {
+            menu.move_selection(-1);
+            cx.notify();
+        }
+    }
+
+    fn on_menu_next(&mut self, _: &action_menu::MenuNext, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(menu) = &mut self.menu {
+            menu.move_selection(1);
+            cx.notify();
+        }
+    }
+
+    fn on_menu_close(
+        &mut self,
+        _: &action_menu::MenuClose,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_menu(window, cx);
+    }
+
+    fn on_menu_confirm(
+        &mut self,
+        _: &action_menu::MenuConfirm,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_menu_entry(window, cx);
+    }
+
+    /// 鼠标点了菜单里第 `pos` 个可见条目
+    fn pick_menu_entry(&mut self, pos: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(menu) = &mut self.menu {
+            menu.select(pos);
+        }
+        self.run_menu_entry(window, cx);
+    }
+
+    fn run_menu_entry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(menu) = self.menu.take() else {
+            return;
+        };
+        let Some(entry) = menu.current() else {
+            self.menu = Some(menu);
+            return;
+        };
+        let (action, output) = (entry.action, entry.output.clone());
+        self.close_menu(window, cx);
+        // 菜单打开期间列表可能刷新过（采集到新内容），按 uuid 重新定位
+        let Some(pos) = self.items.iter().position(|c| c.uuid == menu.uuid) else {
+            self.status = Some("这条记录已经不存在了".into());
+            return;
+        };
+        self.selected = pos;
+        match action {
+            MenuAction::Paste => self.paste(pos, false, cx),
+            MenuAction::PastePlain => self.paste(pos, true, cx),
+            MenuAction::CopyOnly => self.copy_only(pos, cx),
+            MenuAction::PastePaths => {
+                if let Some(clip) = self.full_clip(pos) {
+                    let paths = clip.files().collect::<Vec<_>>().join("\n");
+                    self.paste_text(&paths, "文件路径", cx);
+                }
+            }
+            MenuAction::Open => self.open(pos, cx),
+            MenuAction::Transform(t) => {
+                if let Some(output) = output {
+                    self.paste_text(&output, t.label(), cx);
+                }
+            }
+            MenuAction::TogglePin => self.toggle_pin(pos, cx),
+            MenuAction::Delete => self.delete(pos, cx),
+        }
+    }
+
     fn on_open(&mut self, _: &OpenClip, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(clip) = self.items.get(self.selected) else {
+        self.open(self.selected, cx);
+    }
+
+    fn open(&mut self, pos: usize, cx: &mut Context<Self>) {
+        let Some(clip) = self.items.get(pos) else {
             return;
         };
         match clip.kind {
@@ -615,7 +790,7 @@ fn kind_badge(clip: &Clip, p: &Palette, size: Pixels) -> Div {
 }
 
 /// 键帽样式的快捷键提示
-fn kbd(label: impl Into<SharedString>, p: &Palette) -> Div {
+pub(crate) fn kbd(label: impl Into<SharedString>, p: &Palette) -> Div {
     div()
         .flex_none()
         .h(px(18.))
@@ -1210,8 +1385,8 @@ impl Popup {
             .text_color(p.text_muted)
             .child(hint(&["↵"], "粘贴", p))
             .child(hint(&["Ctrl", "1–9"], "快速粘贴", p))
+            .child(hint(&["Ctrl", "K"], "更多动作", p))
             .child(hint(&["Ctrl", "P"], "收藏", p))
-            .child(hint(&["Shift", "Del"], "删除", p))
             .child(hint(&["Tab"], "分类", p))
             .child(div().flex_1())
             .map(|d| match (&self.config_error, &self.status) {
@@ -1245,6 +1420,12 @@ impl Render for Popup {
             .as_ref()
             .map(|clip| self.render_preview(clip, &p).into_any_element());
         let empty = self.items.is_empty();
+        let menu = self.menu.as_ref().map(|menu| {
+            let view = cx.entity().downgrade();
+            menu.render(&self.menu_search, &p, move |pos, window, cx| {
+                let _ = view.update(cx, |this, cx| this.pick_menu_entry(pos, window, cx));
+            })
+        });
 
         // 虚拟列表：只渲染可见的那几行，历史再多滚动也流畅
         let list = uniform_list(
@@ -1291,6 +1472,11 @@ impl Render for Popup {
             .on_action(cx.listener(Self::on_delete))
             .on_action(cx.listener(Self::on_open))
             .on_action(cx.listener(Self::on_open_settings))
+            .on_action(cx.listener(Self::on_open_menu))
+            .on_action(cx.listener(Self::on_menu_prev))
+            .on_action(cx.listener(Self::on_menu_next))
+            .on_action(cx.listener(Self::on_menu_close))
+            .on_action(cx.listener(Self::on_menu_confirm))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
                 this.on_key_down(event, cx);
             }))
@@ -1307,6 +1493,22 @@ impl Render for Popup {
             .child(div().h(px(1.)).bg(p.divider))
             .child(content)
             .child(self.render_footer(&p))
+            .when_some(menu, |d, menu| {
+                d.child(
+                    // 遮罩：挡住下面的列表和拖动区域，点一下关闭菜单
+                    div()
+                        .id("menu-scrim")
+                        .absolute()
+                        .inset_0()
+                        .occlude()
+                        .bg(p.scrim)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, window, cx| this.close_menu(window, cx)),
+                        ),
+                )
+                .child(menu)
+            })
             .with_animation(
                 ("panel-show", self.show_count),
                 Animation::new(design::SHOW_ANIMATION).with_easing(ease_out_quint()),
