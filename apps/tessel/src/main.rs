@@ -21,6 +21,7 @@ mod settings;
 mod toast;
 mod ui;
 mod update;
+mod welcome;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -88,6 +89,11 @@ pub enum AppCommand {
     },
     /// 托盘菜单"下载新版本"
     OpenReleasePage,
+    /// 安装完成页点了"完成"：是否现在启动、是否开机自启
+    FinishSetup {
+        launch: bool,
+        autostart: bool,
+    },
     /// 用记事本打开 config.toml
     OpenConfigFile,
     /// 托盘复选项被点击（muda 已经切换了勾选状态）
@@ -520,13 +526,18 @@ fn update_tray_hotkey(
 fn main() {
     // Velopack 安装 / 更新 / 卸载时会带特殊参数启动本程序执行钩子，必须放在最前面
     // （这种情况下它会直接退出进程，不会走到后面的逻辑）。直接运行 exe 时这里什么都不做。
+    // 安装程序装好后会直接启动一次程序（first-run）。这时不弹出剪贴板，而是显示安装完成页，
+    // 让用户选择要不要现在启动。TESSEL_FIRST_RUN=1 可以强制显示（测试用）。
+    let first_run = std::cell::Cell::new(std::env::var_os("TESSEL_FIRST_RUN").is_some());
     velopack::VelopackApp::build()
         // 卸载前去掉开机自启，否则卸载后开机还会去启动一个已不存在的程序。
         // 数据目录（%LOCALAPPDATA%\Tessel）不在安装目录里，卸载不会删除用户的历史。
         .on_before_uninstall_fast_callback(|_| {
             let _ = win::set_autostart(false);
         })
+        .on_first_run(|_| first_run.set(true))
         .run();
+    let first_run = first_run.get();
 
     // 单实例：如果已经有一个在运行，通知它显示出来，然后自己退出。
     // 指定了 TESSEL_DATA_DIR 时按数据目录区分实例，测试实例不会和正式实例互相干扰。
@@ -782,7 +793,9 @@ fn main() {
             let mut latest_release: Option<update::Release> = None;
 
             // 双击启动时直接弹出，让用户知道它已经在运行
-            if open_settings {
+            if first_run {
+                welcome::open(tx.clone(), config.hotkey.clone(), cx);
+            } else if open_settings {
                 let _ = tx.try_send(AppCommand::OpenSettingsWindow);
             } else if !start_hidden {
                 let _ = tx.try_send(AppCommand::Show(Instant::now()));
@@ -965,6 +978,26 @@ fn main() {
                             }
                             if let Some((_, view)) = &live_settings {
                                 view.update(cx, |this, cx| this.set_autostart_state(actual, cx));
+                            }
+                        }
+                        AppCommand::FinishSetup { launch, autostart } => {
+                            if let Err(err) = win::set_autostart(autostart) {
+                                log_line(format!("[error] 设置开机自启失败：{err}"));
+                            }
+                            if let Some(items) = &tray_items {
+                                items.autostart.set_checked(win::autostart_enabled());
+                            }
+                            if launch {
+                                let _ = window_handle.update(cx, |_, window, cx| {
+                                    popup.update(cx, |this, cx| {
+                                        this.show_if_hidden(Instant::now(), window, cx)
+                                    })
+                                });
+                            } else {
+                                // 用户选择先不启动：直接退出，不在后台运行
+                                log_line("[setup] 用户选择稍后启动，退出".into());
+                                cx.update(|cx| cx.quit());
+                                break;
                             }
                         }
                         AppCommand::HotkeyRecording(true) => hotkeys.suspend(),

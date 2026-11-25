@@ -566,6 +566,14 @@ pub fn autostart_enabled() -> bool {
 }
 
 pub fn set_autostart(enabled: bool) -> Result<(), String> {
+    // 开机自启的注册表项只有一个（不分数据目录）：测试 / 开发实例不能改它，
+    // 否则会把正式安装的 Tessel 的自启改成指向测试程序，或者直接删掉
+    if std::env::var_os("TESSEL_DATA_DIR").is_some() && !cfg!(test) {
+        crate::log_line(format!(
+            "[autostart] 测试实例不修改开机自启（想设为 {enabled}）"
+        ));
+        return Ok(());
+    }
     use windows::Win32::System::Registry::{
         HKEY_CURRENT_USER, REG_SZ, RegDeleteKeyValueW, RegSetKeyValueW,
     };

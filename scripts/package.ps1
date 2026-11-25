@@ -9,6 +9,8 @@
 # 安装包的行为：
 # - 按当前用户安装到 %LOCALAPPDATA%\Tessel.App，不需要管理员权限
 # - 创建桌面和开始菜单快捷方式，在"设置 → 应用"里登记卸载入口
+# - 安装 / 更新时显示 assets\installer\splash.png（改 splash.svg 后运行 cargo run -p icon-gen --release 重新生成）
+# - 装好后不直接弹出剪贴板：程序第一次启动时显示"安装完成"页，由用户选择是否现在启动、是否开机自启
 # - 卸载时删除程序和快捷方式、关闭开机自启；用户数据（%LOCALAPPDATA%\Tessel）保留
 #   注意：packId 不能叫 "Tessel"，否则安装目录会和数据目录重合，卸载时会把历史一起删掉
 param([switch]$NoBuild)
@@ -52,6 +54,8 @@ try {
         --packTitle 'Tessel 拼贴' `
         --packAuthors 'Tessel contributors' `
         --icon assets\brand\tessel.ico `
+        --splashImage assets\installer\splash.png `
+        --splashProgressColor '#6D5DF6' `
         --shortcuts Desktop,StartMenuRoot `
         --outputDir dist
     if ($LASTEXITCODE -ne 0) { throw 'vpk pack 失败' }
