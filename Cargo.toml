@@ -31,7 +31,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "1.2"
 toml_edit = "0.25"
 serde_json = "1"
-base64 = "0.22"
+base64 = "0.23"
 # 拼音搜索：只要不带声调的拼音（plain），数据表最小
 pinyin = { version = "0.11", default-features = false, features = ["plain"] }
 uuid = { version = "1.29", features = ["v7"] }

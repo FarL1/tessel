@@ -15,9 +15,11 @@ env:
 
 jobs:
   windows:
+    # 0.1.x 是内部测试版：补推的历史标签只用于 CHANGELOG 的版本对比链接，不再打包
+    if: ${{ !startsWith(github.ref_name, 'v0.1.') }}
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
 
@@ -30,7 +32,7 @@ jobs:
             throw "标签 ${{ github.ref_name }} 与 Cargo 版本 v$version 不一致"
           }
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: "8.0.x"
       - run: dotnet tool install -g vpk --version $env:VPK_VERSION
@@ -39,7 +41,7 @@ jobs:
         shell: pwsh
         run: ./scripts/package.ps1
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           draft: true # 先建草稿，人工检查后再发布
           generate_release_notes: true
