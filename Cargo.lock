@@ -7624,6 +7624,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tessel-setup"
+version = "0.2.1"
+dependencies = [
+ "embed-resource",
+ "gpui-kit",
+ "tessel-core",
+ "windows 0.62.2",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"

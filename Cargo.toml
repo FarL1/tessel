@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "apps/tessel",
     "apps/tessel-cli",
+    "apps/tessel-setup",
     "crates/tessel-core",
     "crates/tessel-clipboard",
     "spikes/ime-input",

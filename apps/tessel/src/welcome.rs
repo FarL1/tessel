@@ -153,12 +153,42 @@ impl Render for Welcome {
             .size_full()
             .bg(p.panel)
             .text_color(p.text)
+            // 自己画标题栏：组件库的 TitleBar 在 Windows 上总会显示最大化按钮，而这个窗口不能调大小
             .child(
-                TitleBar::new().child(
-                    div()
-                        .text_sm()
-                        .child(tr("Tessel 拼贴 安装", "Tessel Setup")),
-                ),
+                h_flex()
+                    .h(px(36.))
+                    .flex_none()
+                    .pl_3()
+                    .child(
+                        h_flex()
+                            .id("drag")
+                            .flex_1()
+                            .h_full()
+                            .gap_2()
+                            .on_mouse_down(MouseButton::Left, |_, window, _| {
+                                window.start_window_move()
+                            })
+                            .child(img(self.logo.clone()).size(px(16.)))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(p.text_muted)
+                                    .child(tr("Tessel 拼贴 安装", "Tessel Setup")),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("close")
+                            .w(px(46.))
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_color(p.text_muted)
+                            .hover(|s| s.bg(rgb(0xC42B1C)).text_color(rgb(0xFFFFFF)))
+                            .child(Icon::new(IconName::Close).small())
+                            .on_click(cx.listener(|this, _, window, _| this.finish(window))),
+                    ),
             )
             .child(
                 v_flex()

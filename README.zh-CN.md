@@ -80,7 +80,7 @@ Tessel 是一个**剪贴板管理器**：它在后台记下你每一次复制（
 
 ## 安装
 
-从 [最新版本](https://github.com/FarL1/tessel/releases/latest) 下载 `Tessel.App-win-Setup.exe` 并运行即可：
+从 [最新版本](https://github.com/FarL1/tessel/releases/latest) 下载 `Tessel-Setup.exe` 并运行。安装界面会显示安装位置，装好后由你选择是否马上启动、是否开机自启：
 
 - 支持 Windows 10 / 11（64 位），按当前用户安装，**不需要管理员权限**
 - 安装到 `%LOCALAPPDATA%\Tessel.App`，创建桌面和开始菜单快捷方式

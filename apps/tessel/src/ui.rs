@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName as Lucide;
-use gpui_kit::base::{h_flex, v_flex};
+use gpui_kit::base::{SelectableText, TextSelection, h_flex, v_flex};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, Theme, ThemeMode};
@@ -82,6 +82,9 @@ const NOTE_CONTEXT: &str = "NoteEditor";
 const RESULT_LIMIT: usize = 1000;
 /// 预览区最多显示的字符数，避免超长文本拖慢渲染
 const PREVIEW_CHARS: usize = 8_000;
+
+/// 行尾两个操作按钮（26px）加间距的宽度
+const ROW_ACTIONS_W: Pixels = px(54.);
 
 /// 弹窗的键位表。正式版本里会从用户配置文件加载，允许自定义。
 ///
@@ -1128,6 +1131,35 @@ impl Popup {
         }
     }
 
+    /// Ctrl+C：预览区里选中了文字时，只复制选中的部分。
+    /// 搜索框里有选中文字时由搜索框自己处理；两边都没选中时什么也不做。
+    fn on_copy_selection(
+        &mut self,
+        _: &gpui_kit::base::input::Copy,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = TextSelection::selected_text(window, cx);
+        if text.trim().is_empty() {
+            cx.propagate();
+            return;
+        }
+        self.status = Some(match self.write_text(&text) {
+            Ok(()) => trf!(
+                "已复制选中的 {} 个字符",
+                "Copied {} selected characters",
+                text.chars().count()
+            )
+            .into(),
+            Err(err) => trf!(
+                "写入剪贴板失败：{err}",
+                "Could not write to the clipboard: {err}"
+            )
+            .into(),
+        });
+        cx.notify();
+    }
+
     fn on_start_edit(&mut self, _: &StartEdit, window: &mut Window, cx: &mut Context<Self>) {
         if !self.busy() {
             self.start_edit(self.selected, window, cx);
@@ -1581,6 +1613,22 @@ fn highlighted(text: String, query: &str, p: &Palette) -> StyledText {
     StyledText::new(text).with_highlights(ranges.into_iter().map(move |r| (r, style)))
 }
 
+/// 预览区里可以用鼠标选中的文字：拖动选择、双击选词，Ctrl+C 复制选中的部分。
+/// 字体、字号、颜色沿用外层 div 的设置。
+fn selectable(id: impl Into<ElementId>, text: String, query: &str, p: &Palette) -> SelectableText {
+    let style = HighlightStyle {
+        color: Some(p.accent_text),
+        background_color: Some(p.highlight_bg),
+        ..Default::default()
+    };
+    let ranges = match_ranges(&text, query);
+    let mut selection = p.accent;
+    selection.a = if p.dark { 0.38 } else { 0.28 };
+    SelectableText::new(id, text)
+        .highlights(ranges.into_iter().map(move |r| (r, style)))
+        .selection_color(selection)
+}
+
 /// "3 行" / "3 lines" / "1 line"
 fn count(n: usize, zh_unit: &str, en_one: &str, en_many: &str) -> String {
     if tessel_core::i18n::is_en() {
@@ -1865,9 +1913,15 @@ impl Popup {
                             .child(meta),
                     ),
             )
+            // 右侧：队列序号、收藏星标、编号；鼠标移上来时换成操作按钮。
+            // 操作按钮叠在这一块上面，所以鼠标移上来时它至少要和按钮一样宽，否则按钮会盖住左边的文字。
             .child(
                 h_flex()
+                    .relative()
                     .flex_none()
+                    .group_hover("row", |s| s.min_w(ROW_ACTIONS_W))
+                    .h_full()
+                    .justify_end()
                     .gap_1p5()
                     .when_some(queue_pos, |d, n| {
                         d.child(
@@ -1897,59 +1951,68 @@ impl Popup {
                                 )
                             })
                             .when(pos < 9, |d| d.child(kbd(format!("{}", pos + 1), &p))),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .absolute()
-                    .right(px(6.))
-                    .top_0()
-                    .bottom_0()
-                    .gap_0p5()
-                    .invisible()
-                    .group_hover("row", |s| s.visible())
-                    .child(
-                        icon_button(
-                            ("row-pin", pos),
-                            if clip.pinned {
-                                Lucide::StarOff
-                            } else {
-                                Lucide::Star
-                            },
-                            if clip.pinned {
-                                tr("取消收藏 · Ctrl+P", "Unpin · Ctrl+P")
-                            } else {
-                                tr("收藏 · Ctrl+P", "Pin · Ctrl+P")
-                            },
-                            p,
-                        )
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                if !this.busy() {
-                                    this.toggle_pin(pos, cx);
-                                }
-                            }),
-                        ),
                     )
-                    .child(
-                        icon_button(
-                            ("row-more", pos),
-                            Lucide::Ellipsis,
-                            tr("更多动作 · Ctrl+K", "More actions · Ctrl+K"),
-                            p,
-                        )
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                cx.stop_propagation();
-                                this.open_menu_for(pos, Some(event.position), window, cx);
-                            }),
-                        ),
-                    ),
+                    .child(self.render_row_actions(pos, clip.pinned, p, cx)),
             )
             .into_any_element()
+    }
+
+    /// 行尾的操作按钮（收藏、更多），鼠标移到行上时显示
+    fn render_row_actions(
+        &self,
+        pos: usize,
+        pinned: bool,
+        p: Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        h_flex()
+            .absolute()
+            .right_0()
+            .top_0()
+            .bottom_0()
+            .gap_0p5()
+            .invisible()
+            .group_hover("row", |s| s.visible())
+            .child(
+                icon_button(
+                    ("row-pin", pos),
+                    if pinned {
+                        Lucide::StarOff
+                    } else {
+                        Lucide::Star
+                    },
+                    if pinned {
+                        tr("取消收藏 · Ctrl+P", "Unpin · Ctrl+P")
+                    } else {
+                        tr("收藏 · Ctrl+P", "Pin · Ctrl+P")
+                    },
+                    p,
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        if !this.busy() {
+                            this.toggle_pin(pos, cx);
+                        }
+                    }),
+                ),
+            )
+            .child(
+                icon_button(
+                    ("row-more", pos),
+                    Lucide::Ellipsis,
+                    tr("更多动作 · Ctrl+K", "More actions · Ctrl+K"),
+                    p,
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.open_menu_for(pos, Some(event.position), window, cx);
+                    }),
+                ),
+            )
     }
 
     fn render_empty(&self, p: &Palette) -> impl IntoElement {
@@ -1992,12 +2055,18 @@ impl Popup {
     fn render_preview(&self, clip: &Clip, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
         let pos = self.selected;
         let mono = "Cascadia Mono";
+        let seq = clip.seq as usize;
         let body: AnyElement = match clip.kind {
             Kind::Text => div()
                 .text_base()
                 .line_height(relative(1.65))
                 .text_color(p.text)
-                .child(highlighted(preview_text(&clip.content), &self.highlight, p))
+                .child(selectable(
+                    ("preview-text", seq),
+                    preview_text(&clip.content),
+                    &self.highlight,
+                    p,
+                ))
                 .into_any_element(),
             Kind::Code => div()
                 .p_3()
@@ -2009,7 +2078,12 @@ impl Popup {
                 .text_size(px(12.5))
                 .line_height(relative(1.55))
                 .text_color(p.text)
-                .child(preview_text(&clip.content))
+                .child(selectable(
+                    ("preview-code", seq),
+                    preview_text(&clip.content),
+                    &self.highlight,
+                    p,
+                ))
                 .into_any_element(),
             Kind::Link => v_flex()
                 .gap_2()
@@ -2020,12 +2094,12 @@ impl Popup {
                         .text_color(p.text)
                         .child(clip.domain().to_string()),
                 )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(p.accent_text)
-                        .child(clip.content.trim().to_string()),
-                )
+                .child(div().text_sm().text_color(p.accent_text).child(selectable(
+                    ("preview-link", seq),
+                    clip.content.trim().to_string(),
+                    &self.highlight,
+                    p,
+                )))
                 .child(
                     h_flex()
                         .mt_2()
@@ -2130,7 +2204,8 @@ impl Popup {
                                         .text_sm()
                                         .line_height(relative(1.55))
                                         .text_color(p.text)
-                                        .child(highlighted(
+                                        .child(selectable(
+                                            ("preview-ocr", seq),
                                             preview_text(&text),
                                             &self.highlight,
                                             p,
@@ -2350,15 +2425,8 @@ impl Popup {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    // 双击编辑文字；右键打开动作菜单
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                            if event.click_count >= 2 && !this.busy() {
-                                this.start_edit(pos, window, cx);
-                            }
-                        }),
-                    )
+                    // 文字可以用鼠标选中（双击选词），编辑用 Ctrl+E 或下面的编辑按钮；
+                    // 右键打开动作菜单
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -2420,10 +2488,7 @@ impl Popup {
                 d.child(button(
                     "pv-edit",
                     Lucide::SquarePen,
-                    tr(
-                        "编辑 · Ctrl+E（或双击内容）",
-                        "Edit · Ctrl+E (or double-click)",
-                    ),
+                    tr("编辑 · Ctrl+E", "Edit · Ctrl+E"),
                     |this, pos, window, cx| this.start_edit(pos, window, cx),
                     cx,
                 ))
@@ -2882,6 +2947,7 @@ impl Render for Popup {
             .on_action(cx.listener(Self::on_menu_confirm))
             .on_action(cx.listener(Self::on_toggle_queue))
             .on_action(cx.listener(Self::on_start_edit))
+            .on_action(cx.listener(Self::on_copy_selection))
             .on_action(cx.listener(Self::on_save_edit))
             .on_action(cx.listener(Self::on_save_edit_and_paste))
             .on_action(cx.listener(Self::on_cancel_edit))

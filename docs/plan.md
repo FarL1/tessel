@@ -276,7 +276,7 @@ UI 技术待定：Android 用 Jetpack Compose，iOS 用 SwiftUI，这是最自�
 - [x] 忽略的应用在读取内容之前判断；来源应用在第一次变化通知时记录（兼容 .NET 程序写完即 OleFlushClipboard）
 - [x] 图形化设置页：热键录制、自动粘贴、开机自启、主题、保留条数、忽略的应用、数据位置、清空历史；读写同一个 config.toml（toml_edit 保留注释，原子写入），与文本编辑走同一条热加载路径；热键被占用只作警告，不阻止其他设置生效
 - [x] 富文本：采集时原样保存 HTML Format / Rich Text Format，粘贴时原样写回；Shift+Enter / Ctrl+Shift+1–9 粘贴为纯文本（数据库 v2，自动迁移）
-- [x] 安装包：Velopack（`scripts/package.ps1` → `dist/Tessel.App-win-Setup.exe`），按用户安装、快捷方式、卸载入口；卸载前关闭开机自启，数据目录与安装目录分离（packId = Tessel.App）
+- [x] 安装包：自己的安装界面 + Velopack（`scripts/package.ps1` → `dist/Tessel-Setup.exe`），按用户安装、快捷方式、卸载入口；卸载前关闭开机自启，数据目录与安装目录分离（packId = Tessel.App）
 - [ ] 代码签名（SmartScreen 信誉）、自动更新的发布源（GitHub Releases）→ 放到 M2 公开发布时
 
 **M1 验收（2026-11-24，0.1.0 安装版）**：后台待命私有工作集 18.2MB（目标 < 40MB ✅）；热键 → 首帧 25–46ms（目标 < 50ms ✅）；3000 条历史列表查询约 3ms ✅；安装包 16.9MB（目标 15MB，⚠️ 超出部分是 Velopack 自带的更新器，程序本体压缩后 9.7MB）；冷启动约 1.6–3s（已知问题，见 M0 报告：DirectWrite 字体检查 + D3D11 设备创建，待向上游提修复）。

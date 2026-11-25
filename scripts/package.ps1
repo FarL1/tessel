@@ -1,4 +1,10 @@
-﻿# 生成 Windows 安装包（Velopack）：dist\Tessel.App-win-Setup.exe
+﻿# 生成 Windows 安装包：dist\Tessel-Setup.exe
+#
+# 分两层：
+# 1. Velopack（vpk pack）生成真正干活的安装包 Tessel.App-win-Setup.exe，以及更新用的 nupkg、便携版 zip
+# 2. 我们自己的安装界面 tessel-setup.exe（apps/tessel-setup），把第 1 步的 Setup.exe 附加在末尾，
+#    得到 Tessel-Setup.exe。运行时显示欢迎页 → 安装中 → 完成页，内部以静默模式运行 Velopack。
+#    Velopack 自带的界面不能定制（已安装时还会弹英文的系统对话框），所以不直接发布它的 Setup.exe
 #
 # 前置：dotnet tool install -g vpk --version 1.2.161（版本必须和 apps/tessel/Cargo.toml 里的 velopack 一致）
 #
@@ -9,8 +15,9 @@
 # 安装包的行为：
 # - 按当前用户安装到 %LOCALAPPDATA%\Tessel.App，不需要管理员权限
 # - 创建桌面和开始菜单快捷方式，在"设置 → 应用"里登记卸载入口
-# - 安装 / 更新时显示 assets\installer\splash.png（改 splash.svg 后运行 cargo run -p icon-gen --release 重新生成）
-# - 装好后不直接弹出剪贴板：程序第一次启动时显示"安装完成"页，由用户选择是否现在启动、是否开机自启
+# - 装好后不直接弹出剪贴板：完成页上由用户选择是否现在启动、是否开机自启
+# - 直接运行 Velopack 的 Setup.exe 时（开发调试），安装过程显示 assets\installer\splash.png，
+#   装好后程序第一次启动显示"安装完成"页（apps/tessel/src/welcome.rs）
 # - 卸载时删除程序和快捷方式、关闭开机自启；用户数据（%LOCALAPPDATA%\Tessel）保留
 #   注意：packId 不能叫 "Tessel"，否则安装目录会和数据目录重合，卸载时会把历史一起删掉
 param([switch]$NoBuild)
@@ -26,7 +33,7 @@ Push-Location $repo
 try {
     if (-not $NoBuild) {
         Write-Host '==> 编译 release 版'
-        cargo build -p tessel -p tessel-cli --release
+        cargo build -p tessel -p tessel-cli -p tessel-setup --release
         if ($LASTEXITCODE -ne 0) { throw '编译失败' }
     }
 
@@ -34,7 +41,8 @@ try {
     $version = ($meta.packages | Where-Object name -eq 'tessel').version
     $built = Join-Path $meta.target_directory 'release\tessel.exe'
     $cli = Join-Path $meta.target_directory 'release\tessel-cli.exe'
-    foreach ($f in $built, $cli) {
+    $wrapper = Join-Path $meta.target_directory 'release\tessel-setup.exe'
+    foreach ($f in $built, $cli, $wrapper) {
         if (-not (Test-Path $f)) { throw "找不到编译产物：$f" }
     }
 
@@ -59,6 +67,24 @@ try {
         --shortcuts Desktop,StartMenuRoot `
         --outputDir dist
     if ($LASTEXITCODE -ne 0) { throw 'vpk pack 失败' }
+
+    # 安装界面 + Velopack 安装包 → Tessel-Setup.exe
+    # 布局：[tessel-setup.exe][Setup.exe][长度 u64 小端][TSLPAYLD]（见 apps/tessel-setup/src/payload.rs）
+    Write-Host '==> 生成 Tessel-Setup.exe'
+    $vpkSetup = Join-Path $repo 'dist\Tessel.App-win-Setup.exe'
+    $out = Join-Path $repo 'dist\Tessel-Setup.exe'
+    $payload = [IO.File]::ReadAllBytes($vpkSetup)
+    $front = [IO.File]::ReadAllBytes($wrapper)
+    $fs = [IO.File]::Create($out)
+    try {
+        $fs.Write($front, 0, $front.Length)
+        $fs.Write($payload, 0, $payload.Length)
+        $fs.Write([BitConverter]::GetBytes([uint64]$payload.Length), 0, 8)
+        $fs.Write([Text.Encoding]::ASCII.GetBytes('TSLPAYLD'), 0, 8)
+    }
+    finally { $fs.Close() }
+    # Velopack 的 Setup.exe 已经装进去了，移出 dist，发布页上只留一个安装程序
+    Move-Item $vpkSetup (Join-Path $meta.target_directory 'package\Tessel.App-win-Setup.exe') -Force
 
     Write-Host '==> 产物：'
     Get-ChildItem dist | Format-Table Name, @{ n = '大小'; e = { '{0:N1} MB' -f ($_.Length / 1MB) } } -AutoSize

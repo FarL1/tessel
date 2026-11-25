@@ -81,7 +81,7 @@ Where the name comes from: *tessellation*. Every copy is a tile, and together th
 
 ## Install
 
-Download `Tessel.App-win-Setup.exe` from the [latest release](https://github.com/FarL1/tessel/releases/latest) and run it.
+Download `Tessel-Setup.exe` from the [latest release](https://github.com/FarL1/tessel/releases/latest) and run it. The installer shows where Tessel goes, and when it's done you choose whether to start it now and whether it starts with Windows.
 
 - Windows 10 / 11 (64-bit). Installs for the current user, **no administrator rights needed**
 - Installs to `%LOCALAPPDATA%\Tessel.App` and adds desktop and Start menu shortcuts
