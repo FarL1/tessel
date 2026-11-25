@@ -7578,9 +7578,11 @@ dependencies = [
  "global-hotkey",
  "gpui-kit",
  "raw-window-handle",
+ "serde_json",
  "tessel-clipboard",
  "tessel-core",
  "tray-icon",
+ "ureq",
  "velopack",
  "windows 0.62.2",
 ]

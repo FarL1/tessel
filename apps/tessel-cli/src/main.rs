@@ -20,6 +20,7 @@ use serde::Serialize;
 use tessel_clipboard::WriteContent;
 use tessel_core::backup::ExportScope;
 use tessel_core::i18n::{self, tr};
+use tessel_core::instance::Request;
 use tessel_core::time::{now_ms, relative};
 use tessel_core::{
     Clip, Config, Filter, Kind, LanguagePref, NewClip, Payload, Store, template, trf,
@@ -83,6 +84,12 @@ enum Command {
     },
     /// Import a file exported by Tessel / 导入
     Import { file: PathBuf },
+    /// Open the Tessel popup (Tessel must be running) / 唤起弹窗
+    Show,
+    /// Open Tessel settings (Tessel must be running) / 打开设置
+    Settings,
+    /// Paste the next item of the paste queue into the active window / 粘贴队列的下一条
+    PasteNext,
 }
 
 #[derive(Args)]
@@ -293,6 +300,9 @@ fn run(command: Command, dir: &std::path::Path) -> Result<(), String> {
             );
             Ok(())
         }
+        Command::Show => signal(Request::Show),
+        Command::Settings => signal(Request::Settings),
+        Command::PasteNext => signal(Request::PasteNext),
         Command::Import { file } => {
             let f = std::fs::File::open(&file)
                 .map_err(|e| trf!("无法打开文件：{e}", "Could not open the file: {e}"))?;
@@ -309,6 +319,33 @@ fn run(command: Command, dir: &std::path::Path) -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+/// 通知正在运行的 Tessel（命名事件，和"再次启动 Tessel 时唤起已有窗口"是同一个机制）
+#[cfg(windows)]
+fn signal(request: Request) -> Result<(), String> {
+    use windows::Win32::System::Threading::{EVENT_MODIFY_STATE, OpenEventW, SetEvent};
+    use windows::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
+    let name = windows::core::HSTRING::from(request.event_name());
+    let event = unsafe { OpenEventW(EVENT_MODIFY_STATE, false, &name) }.map_err(|_| {
+        tr(
+            "Tessel 没有在运行（这个命令需要 Tessel 正在运行）",
+            "Tessel isn't running (this command needs a running Tessel)",
+        )
+        .to_string()
+    })?;
+    unsafe {
+        // 我们是用户刚运行的命令，有前台权限：让给 Tessel，它才能把弹窗切到前台
+        let _ = AllowSetForegroundWindow(ASFW_ANY);
+        let result = SetEvent(event).map_err(|e| e.to_string());
+        let _ = windows::Win32::Foundation::CloseHandle(event);
+        result
+    }
+}
+
+#[cfg(not(windows))]
+fn signal(_request: Request) -> Result<(), String> {
+    Err("not implemented on this platform".into())
 }
 
 /// 序号（1 = 最新）、uuid 或片段名 → 记录（完整内容）

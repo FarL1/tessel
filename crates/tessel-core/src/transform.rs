@@ -617,6 +617,7 @@ mod tests {
             has_rich: false,
             note: None,
             snippet: false,
+            ocr: None,
         }
     }
 

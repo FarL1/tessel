@@ -479,8 +479,10 @@ unsafe impl Send for InstanceSignal {}
 pub struct InstanceSignals {
     /// "显示弹窗"（双击快捷方式、再次启动）
     pub show: InstanceSignal,
-    /// "打开设置"（以 --settings 启动）
+    /// "打开设置"（以 --settings 启动、`tessel-cli settings`）
     pub settings: InstanceSignal,
+    /// "粘贴队列的下一条"（`tessel-cli paste-next`）
+    pub paste_next: InstanceSignal,
 }
 
 /// 单实例：第一个实例返回 `Some`，用来接收之后的"请显示"请求；
@@ -489,15 +491,17 @@ pub struct InstanceSignals {
 /// 已经有实例在运行时，把请求（显示弹窗 / 打开设置）转给它并返回 `None`（调用方应直接退出）。
 ///
 /// `instance_key`：区分不同数据目录的实例（开发测试时可以和正式实例同时运行），默认为空。
-pub fn acquire_single_instance(instance_key: &str, want_settings: bool) -> Option<InstanceSignals> {
-    let event = |kind: &str| {
-        let name = windows::core::HSTRING::from(format!(r"Local\Tessel.{kind}{instance_key}"));
+pub fn acquire_single_instance(want_settings: bool) -> Option<InstanceSignals> {
+    use tessel_core::instance::Request;
+    let event = |request: Request| {
+        let name = windows::core::HSTRING::from(request.event_name());
         unsafe { CreateEventW(None, false, false, &name) }.ok()
     };
-    let show = event("ShowRequest")?;
+    let show = event(Request::Show)?;
     // 必须紧跟在第一次 CreateEventW 之后读取
     let already_running = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
-    let settings = event("SettingsRequest")?;
+    let settings = event(Request::Settings)?;
+    let paste_next = event(Request::PasteNext)?;
     if already_running {
         unsafe {
             // 我们是用户刚启动的进程，拥有前台权限；把它让给已经在运行的那个实例
@@ -509,6 +513,7 @@ pub fn acquire_single_instance(instance_key: &str, want_settings: bool) -> Optio
     Some(InstanceSignals {
         show: InstanceSignal(show.0 as isize),
         settings: InstanceSignal(settings.0 as isize),
+        paste_next: InstanceSignal(paste_next.0 as isize),
     })
 }
 

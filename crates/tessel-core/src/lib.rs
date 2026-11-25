@@ -6,6 +6,7 @@ pub mod backup;
 pub mod classify;
 pub mod config;
 pub mod i18n;
+pub mod instance;
 pub mod model;
 pub mod pinyin_index;
 pub mod query;

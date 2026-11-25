@@ -73,6 +73,9 @@ struct Record {
     rtf: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     image: Option<ImageRecord>,
+    /// 图片里识别出的文字
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ocr: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -131,7 +134,7 @@ impl Store {
             .conn
             .prepare(&format!(
                 "SELECT uuid, kind, content, source, created_at, last_used_at, use_count, pinned,
-                        snippet, note, lang, html, rtf, img_file, img_w, img_h
+                        snippet, note, lang, html, rtf, img_file, img_w, img_h, ocr
                  FROM clips {filter} ORDER BY seq ASC"
             ))
             .map_err(db)?;
@@ -168,6 +171,7 @@ impl Store {
                 html: bytes(11).map_err(db)?,
                 rtf: bytes(12).map_err(db)?,
                 image,
+                ocr: r.get(16).map_err(db)?,
             };
             let line = serde_json::to_string(&record).map_err(|e| e.to_string())?;
             writeln!(out, "{line}").map_err(io)?;
@@ -291,9 +295,9 @@ fn import_one(
     // 已经有同样的内容：合并标记和备注
     let merged = tx.execute(
         "UPDATE clips SET pinned = pinned OR ?1, snippet = snippet OR ?2,
-                          note = coalesce(note, ?3)
+                          note = coalesce(note, ?3), ocr = coalesce(ocr, ?5)
          WHERE hash = ?4",
-        params![r.pinned, r.snippet, r.note, hash],
+        params![r.pinned, r.snippet, r.note, hash, r.ocr],
     )?;
     if merged > 0 {
         return Ok(Some(false));
@@ -333,9 +337,9 @@ fn import_one(
     tx.execute(
         "INSERT INTO clips (seq, uuid, kind, content, hash, source, created_at, last_used_at,
                             use_count, pinned, lang, img_file, img_w, img_h, img_bytes,
-                            html, rtf, note, py, snippet)
+                            html, rtf, note, py, snippet, ocr)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                 ?19, ?20)",
+                 ?19, ?20, ?21)",
         params![
             seq,
             uuid,
@@ -365,7 +369,8 @@ fn import_one(
             },
             r.note,
             py,
-            r.snippet
+            r.snippet,
+            r.ocr
         ],
     )?;
     Ok(Some(true))

@@ -404,6 +404,25 @@ impl Popup {
         self.toast = Some(toast);
     }
 
+    /// 自动检查发现新版本：提示一次（去托盘菜单下载）
+    pub fn show_update_notice(&self, version: &str, cx: &mut Context<Self>) {
+        self.show_toast(
+            Notice::new(
+                Tone::Info,
+                Lucide::Download,
+                trf!(
+                    "Tessel {version} 可以更新了",
+                    "Tessel {version} is available"
+                ),
+            )
+            .detail(tr(
+                "在托盘菜单里点\"下载新版本\"",
+                "Use \"Download\" in the tray menu",
+            )),
+            cx,
+        );
+    }
+
     fn show_toast(&self, notice: Notice, cx: &mut Context<Self>) {
         if let Some(toast) = &self.toast {
             toast.update(cx, |t, cx| t.show(notice, cx));
@@ -1366,6 +1385,11 @@ impl Popup {
             MenuAction::Paste => self.paste(pos, false, cx),
             MenuAction::PastePlain => self.paste(pos, true, cx),
             MenuAction::CopyOnly => self.copy_only(pos, cx),
+            MenuAction::PasteOcr => {
+                if let Some(text) = output {
+                    self.paste_text(&text, "图片文字", cx);
+                }
+            }
             MenuAction::PastePaths => {
                 if let Some(clip) = self.full_clip(pos) {
                     let paths = clip.files().collect::<Vec<_>>().join("\n");
@@ -2062,7 +2086,8 @@ impl Popup {
                     .gap_2()
                     .child(
                         div()
-                            .h(px(228.))
+                            // 有识别出的文字时图片框矮一些，文字不用滚动就能看到
+                            .h(px(if clip.ocr.is_some() { 150. } else { 228. }))
                             .rounded(design::RADIUS_LG)
                             .border_1()
                             .border_color(p.border)
@@ -2078,14 +2103,41 @@ impl Popup {
                                 // 所以只限制最大宽高，让图片按比例缩进框里。
                                 img(info.path.clone())
                                     .max_w_full()
-                                    .max_h(px(212.))
+                                    .max_h(px(if clip.ocr.is_some() { 134. } else { 212. }))
                                     .object_fit(ObjectFit::Contain),
                             ),
                     )
-                    .child(div().text_xs().text_color(p.text_muted).child(tr(
-                        "Ctrl+O 用系统查看器打开",
-                        "Ctrl+O to open in the default viewer",
-                    )))
+                    .when(clip.ocr.is_none(), |d| {
+                        d.child(div().text_xs().text_color(p.text_muted).child(tr(
+                            "Ctrl+O 用系统查看器打开",
+                            "Ctrl+O to open in the default viewer",
+                        )))
+                    })
+                    // 识别出的文字（OCR）：可以搜索，也可以在动作菜单里直接粘贴
+                    .when_some(clip.ocr.clone(), |d, text| {
+                        d.child(
+                            v_flex()
+                                .mt_1()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(p.text_faint)
+                                        .child(tr("图片里的文字", "Text in the image")),
+                                )
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .line_height(relative(1.55))
+                                        .text_color(p.text)
+                                        .child(highlighted(
+                                            preview_text(&text),
+                                            &self.highlight,
+                                            p,
+                                        )),
+                                ),
+                        )
+                    })
                     .into_any_element(),
                 None => div()
                     .child(tr("图片文件丢失", "Image file is missing"))

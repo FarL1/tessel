@@ -28,10 +28,13 @@ const PRUNE_EVERY: u32 = 50;
 /// 默认最多保留的未收藏记录数
 pub const DEFAULT_KEEP: usize = 5_000;
 
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 5;
 
 /// v3 → v4：片段
 const MIGRATE_V4: &str = "ALTER TABLE clips ADD COLUMN snippet INTEGER NOT NULL DEFAULT 0;";
+
+/// v4 → v5：图片里识别出的文字（NULL = 还没识别，'' = 识别过但没有文字）
+const MIGRATE_V5: &str = "ALTER TABLE clips ADD COLUMN ocr TEXT;";
 
 /// v1 → v2：文本的富格式
 const MIGRATE_V2: &str =
@@ -87,11 +90,11 @@ pub(crate) fn image_hash(png: &[u8]) -> String {
 fn fts_text(row: &str) -> String {
     format!(
         "substr({row}content, 1, 20000) || char(10) || coalesce({row}note, '') \
-         || char(10) || coalesce({row}py, '')"
+         || char(10) || coalesce({row}py, '') || char(10) || coalesce({row}ocr, '')"
     )
 }
 
-/// v3 的触发器：正文、备注、拼音任何一个变了都同步全文索引
+/// 触发器：正文、备注、拼音、识别出的文字任何一个变了都同步全文索引
 fn fts_triggers() -> String {
     let (new, old) = (fts_text("new."), fts_text("old."));
     format!(
@@ -101,14 +104,14 @@ fn fts_triggers() -> String {
          CREATE TRIGGER clips_ad AFTER DELETE ON clips BEGIN
              INSERT INTO clip_fts(clip_fts, rowid, content) VALUES ('delete', old.seq, {old});
          END;
-         CREATE TRIGGER clips_au AFTER UPDATE OF content, note, py ON clips BEGIN
+         CREATE TRIGGER clips_au AFTER UPDATE OF content, note, py, ocr ON clips BEGIN
              INSERT INTO clip_fts(clip_fts, rowid, content) VALUES ('delete', old.seq, {old});
              INSERT INTO clip_fts(rowid, content) VALUES (new.seq, {new});
          END;"
     )
 }
 
-/// v2 → v3：备注、拼音索引，全文索引改为包含这两项
+/// v2 → v3：备注、拼音索引（全文索引在所有迁移之后统一重建）
 fn migrate_v3(tx: &rusqlite::Transaction) -> Result<()> {
     tx.execute_batch(
         "DROP TRIGGER IF EXISTS clips_ai;
@@ -129,8 +132,16 @@ fn migrate_v3(tx: &rusqlite::Transaction) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+/// 按当前的表达式重建全文索引和触发器（索引内容的组成变化之后调用）
+fn rebuild_fts(tx: &rusqlite::Transaction) -> Result<()> {
     tx.execute_batch(&format!(
-        "INSERT INTO clip_fts(clip_fts) VALUES ('delete-all');
+        "DROP TRIGGER IF EXISTS clips_ai;
+         DROP TRIGGER IF EXISTS clips_ad;
+         DROP TRIGGER IF EXISTS clips_au;
+         INSERT INTO clip_fts(clip_fts) VALUES ('delete-all');
          INSERT INTO clip_fts(rowid, content) SELECT seq, {} FROM clips;
          {}",
         fts_text(""),
@@ -141,10 +152,10 @@ fn migrate_v3(tx: &rusqlite::Transaction) -> Result<()> {
 /// 列表查询只取内容的前 N 个字符（标题、文件数、颜色都够用），完整内容用 `get()` 按需读取
 pub const LIST_CONTENT_CHARS: usize = 4000;
 
-const LIST_COLUMNS: &str = "c.seq, c.uuid, c.kind, substr(c.content, 1, 4000), c.source,      c.created_at, c.last_used_at, c.use_count, c.pinned, c.lang, c.img_file, c.img_w, c.img_h, c.img_bytes, \n     (c.html IS NOT NULL OR c.rtf IS NOT NULL), c.note, c.snippet";
+const LIST_COLUMNS: &str = "c.seq, c.uuid, c.kind, substr(c.content, 1, 4000), c.source,      c.created_at, c.last_used_at, c.use_count, c.pinned, c.lang, c.img_file, c.img_w, c.img_h, c.img_bytes, \n     (c.html IS NOT NULL OR c.rtf IS NOT NULL), c.note, c.snippet, substr(c.ocr, 1, 300)";
 
 const COLUMNS: &str = "c.seq, c.uuid, c.kind, c.content, c.source, c.created_at, c.last_used_at, \
-     c.use_count, c.pinned, c.lang, c.img_file, c.img_w, c.img_h, c.img_bytes,      (c.html IS NOT NULL OR c.rtf IS NOT NULL), c.note, c.snippet";
+     c.use_count, c.pinned, c.lang, c.img_file, c.img_w, c.img_h, c.img_bytes,      (c.html IS NOT NULL OR c.rtf IS NOT NULL), c.note, c.snippet, c.ocr";
 
 /// 各分类的条数（用于分类标签上的数字）
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -200,6 +211,11 @@ impl Store {
             }
             if version < 4 {
                 tx.execute_batch(MIGRATE_V4)?;
+            }
+            if version < 5 {
+                tx.execute_batch(MIGRATE_V5)?;
+                // 索引内容加了识别出的文字（v3 加了备注和拼音），统一重建一次
+                rebuild_fts(&tx)?;
             }
             tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
             tx.commit()?;
@@ -263,7 +279,7 @@ impl Store {
         let existing = tx
             .query_row(
                 "SELECT uuid, created_at, use_count, pinned, source, img_file, img_w, img_h, img_bytes,
-                        html, rtf, note, snippet
+                        html, rtf, note, snippet, ocr
                  FROM clips WHERE hash = ?1",
                 [&hash],
                 |r| {
@@ -283,6 +299,7 @@ impl Store {
                         },
                         r.get::<_, Option<String>>(11)?,
                         r.get::<_, bool>(12)?,
+                        r.get::<_, Option<String>>(13)?,
                     ))
                 },
             )
@@ -292,6 +309,8 @@ impl Store {
         // 备注、片段标记跟着内容走：再次复制同样的内容不会丢
         let note = existing.as_ref().and_then(|e| e.10.clone());
         let snippet = existing.as_ref().is_some_and(|e| e.11);
+        // 同一张图片再次复制：已经识别出的文字留着，不用重新识别
+        let ocr = existing.as_ref().and_then(|e| e.12.clone());
         let (uuid, created_at, use_count, pinned, source, img_file, img_w, img_h, img_bytes, rich) =
             match existing {
                 Some((
@@ -305,6 +324,7 @@ impl Store {
                     h,
                     bytes,
                     old_rich,
+                    _,
                     _,
                     _,
                 )) => {
@@ -372,9 +392,9 @@ impl Store {
         tx.execute(
             "INSERT INTO clips (uuid, kind, content, hash, source, created_at, last_used_at,
                                 use_count, pinned, lang, img_file, img_w, img_h, img_bytes,
-                                html, rtf, note, py, snippet)
+                                html, rtf, note, py, snippet, ocr)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                     ?19)",
+                     ?19, ?20)",
             params![
                 uuid,
                 kind.as_str(),
@@ -394,7 +414,8 @@ impl Store {
                 rich.rtf,
                 note,
                 py,
-                snippet
+                snippet,
+                ocr
             ],
         )?;
         let seq = tx.last_insert_rowid();
@@ -460,6 +481,30 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(Some(kind))
+    }
+
+    /// 保存图片里识别出的文字（没有文字时传空字符串，表示已经识别过）
+    pub fn set_ocr(&self, uuid: &str, text: &str) -> Result<()> {
+        // 图片的正文只是"图片 W×H"，拼音索引用识别出的文字来建，中文截图也能用拼音搜
+        self.conn.execute(
+            "UPDATE clips SET ocr = ?1, py = ?2 WHERE uuid = ?3",
+            params![text, pinyin_index::index_text(text), uuid],
+        )?;
+        Ok(())
+    }
+
+    /// 还没识别过文字的图片（新的在前）：uuid 和图片文件
+    pub fn images_pending_ocr(&self, limit: usize) -> Result<Vec<(String, PathBuf)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT uuid, img_file FROM clips
+             WHERE kind = 'image' AND ocr IS NULL AND img_file IS NOT NULL
+             ORDER BY seq DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        rows.map(|r| r.map(|(uuid, file)| (uuid, self.images_dir.join(file))))
+            .collect()
     }
 
     /// 标记 / 取消片段
@@ -588,13 +633,18 @@ impl Store {
             if pinyin_index::is_pinyin_query(s) {
                 conds.push(
                     "(c.content LIKE ? ESCAPE '\\' OR c.note LIKE ? ESCAPE '\\' \
+                     OR c.ocr LIKE ? ESCAPE '\\' \
                      OR substr(c.py, 1, instr(c.py, ' ') - 1) LIKE ? ESCAPE '\\')"
                         .into(),
                 );
-                args.extend([pattern.clone(), pattern.clone(), pattern]);
+                args.extend([pattern.clone(), pattern.clone(), pattern.clone(), pattern]);
             } else {
-                conds.push("(c.content LIKE ? ESCAPE '\\' OR c.note LIKE ? ESCAPE '\\')".into());
-                args.extend([pattern.clone(), pattern]);
+                conds.push(
+                    "(c.content LIKE ? ESCAPE '\\' OR c.note LIKE ? ESCAPE '\\' \
+                     OR c.ocr LIKE ? ESCAPE '\\')"
+                        .into(),
+                );
+                args.extend([pattern.clone(), pattern.clone(), pattern]);
             }
         }
         for s in &q.excluded {
@@ -715,6 +765,7 @@ impl Store {
             has_rich: r.get(14)?,
             note: r.get(15)?,
             snippet: r.get(16)?,
+            ocr: r.get::<_, Option<String>>(17)?.filter(|t| !t.is_empty()),
         })
     }
 }
@@ -1174,6 +1225,97 @@ mod tests {
         assert_eq!(store.counts().unwrap().snippets, 0);
         // 空内容不创建
         assert_eq!(store.create_snippet("  ").unwrap(), None);
+    }
+
+    #[test]
+    fn ocr_text_is_searchable() {
+        let mut store = temp_store("ocr");
+        let image = |png: Vec<u8>| NewClip {
+            payload: Payload::Image {
+                png,
+                width: 2,
+                height: 1,
+            },
+            source: Some("截图工具".into()),
+            from_self: false,
+            rich: Default::default(),
+        };
+        store.record(image(vec![1, 2, 3])).unwrap();
+        store.record(image(vec![4, 5, 6])).unwrap();
+        store.record(text("普通文字", "x")).unwrap();
+        let pending = store.images_pending_ocr(10).unwrap();
+        assert_eq!(pending.len(), 2);
+        assert!(pending[0].1.exists());
+
+        let (first, _) = &pending[0];
+        store
+            .set_ocr(first, "发票号码 INV-2026-0042 金额 128.00")
+            .unwrap();
+        // 没有文字也要标记为已识别，不会反复识别
+        store.set_ocr(&pending[1].0, "").unwrap();
+        assert!(store.images_pending_ocr(10).unwrap().is_empty());
+
+        let hits = |q: &str| store.search(q, Filter::All, 10).unwrap();
+        assert_eq!(hits("INV-2026")[0].uuid, *first);
+        assert_eq!(hits("发票")[0].uuid, *first);
+        assert_eq!(hits("fphm")[0].uuid, *first);
+        let clip = store.get(first).unwrap().unwrap();
+        assert_eq!(
+            clip.ocr.as_deref(),
+            Some("发票号码 INV-2026-0042 金额 128.00")
+        );
+        assert_eq!(store.get(&pending[1].0).unwrap().unwrap().ocr, None);
+
+        // 同一张图片再次复制：识别结果保留
+        store.record(image(vec![1, 2, 3])).unwrap();
+        assert_eq!(store.search("INV-2026", Filter::All, 10).unwrap().len(), 1);
+        assert!(store.images_pending_ocr(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn migrates_v4_database() {
+        let tmp = TempDir::new("migrate-v4");
+        let dir = &tmp.0;
+        {
+            let mut store = Store::open(dir).unwrap();
+            store.record(text("旧版本里的会议纪要", "飞书")).unwrap();
+            let uuid = store.search("", Filter::All, 1).unwrap()[0].uuid.clone();
+            store.set_note(&uuid, "周会 #工作").unwrap();
+            // 退回 v4：去掉 ocr 列，按 v4 的表达式重建索引和触发器
+            store
+                .conn
+                .execute_batch(
+                    "DROP TRIGGER clips_ai; DROP TRIGGER clips_ad; DROP TRIGGER clips_au;
+                     ALTER TABLE clips DROP COLUMN ocr;
+                     INSERT INTO clip_fts(clip_fts) VALUES ('delete-all');
+                     INSERT INTO clip_fts(rowid, content) SELECT seq,
+                       substr(content, 1, 20000) || char(10) || coalesce(note, '')
+                       || char(10) || coalesce(py, '') FROM clips;
+                     PRAGMA user_version = 4;",
+                )
+                .unwrap();
+        }
+        let mut store = Store::open(dir).unwrap();
+        let hits = |store: &Store, q: &str| store.search(q, Filter::All, 10).unwrap().len();
+        assert_eq!(hits(&store, "会议纪要"), 1);
+        assert_eq!(hits(&store, "#工作"), 1);
+        assert_eq!(hits(&store, "hyjy"), 1);
+        store.record(text("新的一条", "x")).unwrap();
+        store
+            .delete(
+                &store.search("会议", Filter::All, 1).unwrap()[0]
+                    .uuid
+                    .clone(),
+            )
+            .unwrap();
+        assert_eq!(hits(&store, "会议纪要"), 0);
+        store
+            .conn
+            .execute(
+                "INSERT INTO clip_fts(clip_fts) VALUES ('integrity-check')",
+                [],
+            )
+            .unwrap();
     }
 
     #[test]

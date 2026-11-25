@@ -169,6 +169,8 @@ pub struct Clip {
     pub note: Option<String>,
     /// 片段：粘贴时展开模板变量，永远不会被自动清理
     pub snippet: bool,
+    /// 图片里识别出的文字（OCR）。列表查询里截断到 300 字
+    pub ocr: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

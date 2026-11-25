@@ -55,6 +55,8 @@ gpui_kit::assets::icon_assets!(
         Trash,
         Command,
         Ellipsis,
+        ArrowLeft,
+        Download,
         Copy,
         Star,
         StarOff,
@@ -94,6 +96,8 @@ pub enum MenuAction {
     PastePlain,
     CopyOnly,
     PastePaths,
+    /// 粘贴图片里识别出的文字
+    PasteOcr,
     Open,
     Transform(Transform),
     TogglePin,
@@ -238,6 +242,18 @@ impl ActionMenu {
             ))
             .keywords("copy"),
         );
+        if let Some(text) = clip.ocr.as_deref().filter(|_| clip.kind == Kind::Image) {
+            let mut entry = Entry::new(
+                A::PasteOcr,
+                tr("粘贴图片里的文字", "Paste the text in the image"),
+                IconName::Type,
+                Group::Paste,
+            )
+            .detail(summarize(text))
+            .keywords("ocr text 文字 识别 提取");
+            entry.output = Some(text.to_string());
+            entries.push(entry);
+        }
         if clip.kind == Kind::File {
             let n = clip.files().count();
             entries.push(

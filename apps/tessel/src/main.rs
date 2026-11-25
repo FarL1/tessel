@@ -15,9 +15,12 @@ mod win;
 
 mod action_menu;
 mod design;
+#[cfg(windows)]
+mod ocr;
 mod settings;
 mod toast;
 mod ui;
+mod update;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -75,6 +78,16 @@ pub enum AppCommand {
     ResetPosition,
     /// 打开设置窗口（已经打开就切到前台）
     OpenSettingsWindow,
+    /// 设置窗口的"返回"：先显示弹窗，再关闭设置窗口
+    BackToPopup,
+    /// 设置里点了"立即检查"
+    CheckUpdates,
+    /// 后台检查更新完成（结果在 `UpdateSlot` 里）。`manual`：是用户点的"立即检查"
+    UpdateChecked {
+        manual: bool,
+    },
+    /// 托盘菜单"下载新版本"
+    OpenReleasePage,
     /// 用记事本打开 config.toml
     OpenConfigFile,
     /// 托盘复选项被点击（muda 已经切换了勾选状态）
@@ -118,7 +131,58 @@ fn parse_hotkey(s: &str) -> Result<HotKey, String> {
 type SettingsWindow = (AnyWindowHandle, WeakEntity<settings::SettingsView>);
 
 /// 托盘里需要在运行时更新的菜单项
+/// 最近一次检查更新的结果（后台线程写，主线程读）
+type UpdateSlot = Arc<std::sync::Mutex<Option<Result<Option<update::Release>, String>>>>;
+
+/// 在后台线程检查更新，完成后通知主线程
+fn check_updates_in_background(
+    slot: UpdateSlot,
+    tx: async_channel::Sender<AppCommand>,
+    manual: bool,
+) {
+    std::thread::Builder::new()
+        .name("tessel-update-check".into())
+        .spawn(move || {
+            let result = update::check();
+            match &result {
+                Ok(Some(release)) => log_line(format!("[update] 发现新版本 {}", release.version)),
+                Ok(None) => debug_log("[update] 已是最新版本".into()),
+                Err(err) => log_line(format!("[update] 检查更新失败：{err}")),
+            }
+            if let Ok(mut slot) = slot.lock() {
+                *slot = Some(result);
+            }
+            let _ = tx.try_send(AppCommand::UpdateChecked { manual });
+        })
+        .ok();
+}
+
+/// 启动 15 秒后检查一次，之后每 24 小时一次（设置里关掉时跳过）
+fn spawn_update_schedule(
+    config: Arc<RwLock<Config>>,
+    slot: UpdateSlot,
+    tx: async_channel::Sender<AppCommand>,
+) {
+    std::thread::Builder::new()
+        .name("tessel-update-schedule".into())
+        .spawn(move || {
+            std::thread::sleep(Duration::from_secs(15));
+            loop {
+                if config.read().is_ok_and(|c| c.check_updates) {
+                    check_updates_in_background(slot.clone(), tx.clone(), false);
+                }
+                std::thread::sleep(Duration::from_secs(24 * 3600));
+            }
+        })
+        .ok();
+}
+
 struct TrayItems {
+    /// 托盘菜单本身（有新版本时在顶部插入"下载新版本"）
+    menu: Menu,
+    /// "下载新版本"：发现新版本后才插入菜单
+    update: MenuItem,
+    update_shown: bool,
     show: MenuItem,
     pause: CheckMenuItem,
     autostart: CheckMenuItem,
@@ -169,6 +233,7 @@ fn build_tray(
     let reset = MenuItem::new("", true, None);
     let clear = MenuItem::new("", true, None);
     let quit = MenuItem::new("", true, None);
+    let update = MenuItem::new("", true, None);
     let sep = PredefinedMenuItem::separator;
     let menu = Menu::new();
     menu.append_items(&[
@@ -193,6 +258,7 @@ fn build_tray(
         (reset.id().clone(), Some(AppCommand::ResetPosition)),
         (clear.id().clone(), Some(AppCommand::ClearHistory)),
         (quit.id().clone(), Some(AppCommand::Quit)),
+        (update.id().clone(), Some(AppCommand::OpenReleasePage)),
     ];
     let menu_tx = tx.clone();
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
@@ -216,11 +282,14 @@ fn build_tray(
     let tray = TrayIconBuilder::new()
         .with_icon(icon)
         .with_tooltip(tray_tooltip(hotkey_label))
-        .with_menu(Box::new(menu))
+        .with_menu(Box::new(menu.clone()))
         .with_menu_on_left_click(false)
         .build()
         .ok()?;
     let items = TrayItems {
+        menu,
+        update,
+        update_shown: false,
         show,
         pause,
         autostart,
@@ -448,13 +517,6 @@ fn update_tray_hotkey(
     }
 }
 
-/// FNV-1a：结果在任何 Rust 版本下都稳定（标准库的 DefaultHasher 不保证）
-fn stable_hash(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
-        (h ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3)
-    })
-}
-
 fn main() {
     // Velopack 安装 / 更新 / 卸载时会带特殊参数启动本程序执行钩子，必须放在最前面
     // （这种情况下它会直接退出进程，不会走到后面的逻辑）。直接运行 exe 时这里什么都不做。
@@ -468,13 +530,9 @@ fn main() {
 
     // 单实例：如果已经有一个在运行，通知它显示出来，然后自己退出。
     // 指定了 TESSEL_DATA_DIR 时按数据目录区分实例，测试实例不会和正式实例互相干扰。
-    let instance_key = match std::env::var_os("TESSEL_DATA_DIR") {
-        Some(dir) => format!(".{:016x}", stable_hash(dir.to_string_lossy().as_bytes())),
-        None => String::new(),
-    };
     let start_hidden = std::env::args().any(|a| a == "--background");
     let open_settings = std::env::args().any(|a| a == "--settings");
-    let Some(signals) = win::acquire_single_instance(&instance_key, open_settings) else {
+    let Some(signals) = win::acquire_single_instance(open_settings) else {
         return;
     };
 
@@ -514,6 +572,9 @@ fn main() {
         }
     };
 
+    // 图片文字识别（后台线程，离线）：新采集到图片时唤醒它
+    let ocr_wake = ocr::spawn(dir.clone(), tx.clone());
+
     // 剪贴板采集线程
     let paused = Arc::new(AtomicBool::new(false));
     match Store::open(&dir) {
@@ -533,6 +594,7 @@ fn main() {
                     };
                     let source = clip.source.clone().unwrap_or_default();
                     let notify = !clip.from_self;
+                    let is_image = matches!(clip.payload, Payload::Image { .. });
                     let rich = if clip.rich.is_empty() {
                         ""
                     } else {
@@ -546,6 +608,9 @@ fn main() {
                         Ok(Some(seq)) => {
                             debug_log(format!("[capture] {kind}{rich} · {source} · seq={seq}"));
                             let _ = tx.try_send(AppCommand::ClipboardChanged { notify });
+                            if is_image && let Some(wake) = &ocr_wake {
+                                let _ = wake.send(());
+                            }
                         }
                         Ok(None) => {}
                         Err(err) => log_line(format!("[capture] 写入失败：{err}")),
@@ -561,7 +626,18 @@ fn main() {
 
     // 第二个实例转来的请求：显示弹窗 / 打开设置
     {
-        let win::InstanceSignals { show, settings } = signals;
+        let win::InstanceSignals {
+            show,
+            settings,
+            paste_next,
+        } = signals;
+        // 命令行 `tessel-cli paste-next`：和队列热键一样
+        let paste_tx = tx.clone();
+        std::thread::spawn(move || {
+            while paste_next.wait() {
+                let _ = paste_tx.try_send(AppCommand::PasteNext);
+            }
+        });
         let show_tx = tx.clone();
         std::thread::spawn(move || {
             while show.wait() {
@@ -614,7 +690,7 @@ fn main() {
             }));
 
             // 托盘：tray-icon 同样依赖当前线程的消息循环（GPUI 的）
-            let (tray, tray_items) = match build_tray(tx.clone(), &config.hotkey) {
+            let (tray, mut tray_items) = match build_tray(tx.clone(), &config.hotkey) {
                 Some((tray, items)) => (Some(tray), Some(items)),
                 None => {
                     log_line("[warn] 创建托盘图标失败".into());
@@ -699,6 +775,11 @@ fn main() {
                 "[ready] 按 {} 唤起 · 启动后工作集 {ws:.1}MB · 私有 {private:.1}MB",
                 config.hotkey
             ));
+
+            let update_slot: UpdateSlot = Arc::new(std::sync::Mutex::new(None));
+            spawn_update_schedule(shared_config.clone(), update_slot.clone(), tx.clone());
+            // 最近发现的新版本（托盘"下载新版本"打开它的页面）
+            let mut latest_release: Option<update::Release> = None;
 
             // 双击启动时直接弹出，让用户知道它已经在运行
             if open_settings {
@@ -798,8 +879,65 @@ fn main() {
                                         cx,
                                     )
                                 });
+                                if let Some((_, view)) = &opened {
+                                    let known = update_slot.lock().ok().and_then(|s| s.clone());
+                                    if let Some(result) = known {
+                                        view.update(cx, |v, cx| v.set_update_result(&result, false, cx));
+                                    }
+                                }
                                 settings_win = opened.map(|(h, e)| (h, e.downgrade()));
                             }
+                        }
+                        AppCommand::BackToPopup => {
+                            // 先把弹窗显示出来（置顶），再关设置窗口，中间不会露出桌面
+                            let _ = window_handle.update(cx, |_, window, cx| {
+                                popup.update(cx, |this, cx| {
+                                    this.show_if_hidden(Instant::now(), window, cx)
+                                })
+                            });
+                            if let Some((handle, _)) = &live_settings {
+                                let _ = handle.update(cx, |_, window, _| window.remove_window());
+                            }
+                            settings_win = None;
+                        }
+                        AppCommand::CheckUpdates => {
+                            check_updates_in_background(update_slot.clone(), cmd_tx.clone(), true);
+                        }
+                        AppCommand::UpdateChecked { manual } => {
+                            let result = update_slot.lock().ok().and_then(|s| s.clone());
+                            let Some(result) = result else { continue };
+                            if let Some((_, view)) = &live_settings {
+                                view.update(cx, |v, cx| v.set_update_result(&result, manual, cx));
+                            }
+                            if let Ok(Some(release)) = &result {
+                                let first_time = latest_release.as_ref() != Some(release);
+                                latest_release = Some(release.clone());
+                                if let Some(items) = &mut tray_items {
+                                    let version = &release.version;
+                                    items.update.set_text(trf!(
+                                        "下载新版本 {version}…",
+                                        "Download Tessel {version}…"
+                                    ));
+                                    if !items.update_shown
+                                        && items.menu.prepend(&items.update).is_ok()
+                                    {
+                                        let _ = items.menu.insert(&PredefinedMenuItem::separator(), 1);
+                                        items.update_shown = true;
+                                    }
+                                }
+                                // 自动检查发现新版本：提示一次
+                                if first_time && !manual {
+                                    let version = release.version.clone();
+                                    popup.update(cx, |this, cx| this.show_update_notice(&version, cx));
+                                }
+                            }
+                        }
+                        AppCommand::OpenReleasePage => {
+                            let url = latest_release
+                                .as_ref()
+                                .map(|r| r.url.clone())
+                                .unwrap_or_else(|| update::RELEASES_PAGE.to_string());
+                            cx.update(|cx| cx.open_url(&url));
                         }
                         AppCommand::OpenConfigFile => {
                             // 记事本一定存在；.toml 不一定关联了编辑器

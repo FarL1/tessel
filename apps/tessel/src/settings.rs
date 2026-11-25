@@ -73,6 +73,11 @@ pub struct SettingsView {
     info: Option<SharedString>,
     /// 正在导入或导出：按钮暂时不可用
     busy: bool,
+    /// 检查更新的结果（"已是最新版本""发现新版本 x"）
+    update_status: Option<SharedString>,
+    /// 新版本的下载页面
+    update_url: Option<String>,
+    checking_update: bool,
     storage: String,
     logo: Arc<Image>,
     _subscriptions: Vec<Subscription>,
@@ -137,6 +142,9 @@ impl SettingsView {
             notice: None,
             info: None,
             busy: false,
+            update_status: None,
+            update_url: None,
+            checking_update: false,
             storage,
             logo: Arc::new(Image::from_bytes(
                 ImageFormat::Png,
@@ -214,6 +222,55 @@ impl SettingsView {
     }
 
     // ── 热键录制 ──
+
+    /// 返回弹窗：弹窗显示出来之后，主线程会关掉这个窗口
+    /// 主线程检查完更新后调用。`manual`：用户点了"立即检查"（失败时要告诉他）
+    pub fn set_update_result(
+        &mut self,
+        result: &Result<Option<crate::update::Release>, String>,
+        manual: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.checking_update = false;
+        match result {
+            Ok(Some(release)) => {
+                let version = &release.version;
+                self.update_status =
+                    Some(trf!("发现新版本 {version}", "Tessel {version} is available").into());
+                self.update_url = Some(release.url.clone());
+            }
+            Ok(None) => {
+                self.update_status = Some(
+                    trf!(
+                        "已是最新版本（{}）",
+                        "You're up to date ({})",
+                        env!("CARGO_PKG_VERSION")
+                    )
+                    .into(),
+                );
+                self.update_url = None;
+            }
+            Err(err) if manual => {
+                self.update_status = Some(trf!("检查失败：{err}", "Couldn't check: {err}").into());
+            }
+            Err(_) => {}
+        }
+        cx.notify();
+    }
+
+    fn check_updates_now(&mut self, cx: &mut Context<Self>) {
+        if self.checking_update {
+            return;
+        }
+        self.checking_update = true;
+        self.update_status = Some(tr("正在检查…", "Checking…").into());
+        let _ = self.tx.try_send(AppCommand::CheckUpdates);
+        cx.notify();
+    }
+
+    fn back(&mut self) {
+        let _ = self.tx.try_send(AppCommand::BackToPopup);
+    }
 
     // ── 导入导出 ──
 
@@ -1016,8 +1073,51 @@ impl Render for SettingsView {
                 )),
         );
 
+        let check_updates = self.config.check_updates;
+        let update_url = self.update_url.clone();
         let about = card(tr("关于", "About"), &p).child(
-            card_body(&p).child(
+            card_body(&p)
+                .child(row(
+                    tr("检查更新", "Updates"),
+                    self.update_status.clone().unwrap_or_else(|| {
+                        tr(
+                            "每天检查一次 GitHub 上有没有新版本，只读取公开的版本号。",
+                            "Checks GitHub once a day for a new version; only the public version number is read.",
+                        )
+                        .into()
+                    }),
+                    h_flex()
+                        .gap_2()
+                        .when_some(update_url, |d, url| {
+                            d.child(
+                                Button::new("download-update")
+                                    .label(tr("下载", "Download"))
+                                    .small()
+                                    .primary()
+                                    .on_click(move |_, _, cx| cx.open_url(&url)),
+                            )
+                        })
+                        .child(
+                            Button::new("check-now")
+                                .label(tr("立即检查", "Check now"))
+                                .small()
+                                .outline()
+                                .disabled(self.checking_update)
+                                .on_click(cx.listener(|this, _, _, cx| this.check_updates_now(cx))),
+                        )
+                        .child(
+                            Switch::new("auto-update-check")
+                                .checked(check_updates)
+                                .tooltip(tr("自动检查", "Check automatically"))
+                                .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                    let v = *checked;
+                                    this.change(cx, |c| c.check_updates = v)
+                                })),
+                        ),
+                    false,
+                    &p,
+                ))
+                .child(
                 h_flex()
                     .px_4()
                     .py_4()
@@ -1041,6 +1141,14 @@ impl Render for SettingsView {
                                 "每一次复制，都拼进你的工作里。· MIT OR Apache-2.0",
                                 "A clipboard manager for Windows · MIT OR Apache-2.0",
                             ))),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("open-repo")
+                            .label("GitHub")
+                            .small()
+                            .ghost()
+                            .on_click(|_, _, cx| cx.open_url("https://github.com/FarL1/tessel")),
                     ),
             ),
         );
@@ -1050,10 +1158,27 @@ impl Render for SettingsView {
             .relative()
             .bg(p.panel)
             .text_color(p.text)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, _| {
+                if event.keystroke.key == "escape" && this.recording.is_none() {
+                    this.back();
+                }
+            }))
             .child(
                 TitleBar::new().child(
                     h_flex()
                         .gap_2()
+                        .child(
+                            Button::new("back")
+                                .ghost()
+                                .small()
+                                .icon(Icon::new(gpui_kit::assets::IconName::ArrowLeft))
+                                .label(tr("返回", "Back"))
+                                .tooltip(tr(
+                                    "回到剪贴板历史 · Esc",
+                                    "Back to clipboard history · Esc",
+                                ))
+                                .on_click(cx.listener(|this, _, _, _| this.back())),
+                        )
                         .child(img(self.logo.clone()).size(px(16.)))
                         .child(div().text_sm().child(tr("Tessel 设置", "Tessel Settings"))),
                 ),
@@ -1133,7 +1258,8 @@ pub fn open(
     cx: &mut App,
 ) -> Option<(AnyWindowHandle, Entity<SettingsView>)> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    let bounds = Bounds::centered(None, size(px(720.), px(700.)), cx);
+    // 和弹窗一样大：从弹窗点进来时窗口不会忽大忽小，像是在同一个窗口里翻页
+    let bounds = Bounds::centered(None, size(px(design::WINDOW_W), px(design::WINDOW_H)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: Some(TitleBar::title_bar_options()),

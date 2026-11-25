@@ -32,6 +32,9 @@ auto_paste = true
 # 每次复制成功时，在屏幕底部显示一个小提示
 copy_toast = true
 
+# 每天检查一次 GitHub 上有没有新版本（只读取公开的版本号，不发送任何个人数据）
+check_updates = true
+
 # 外观："system"（跟随系统）、"light"、"dark"
 theme = "system"
 
@@ -90,6 +93,7 @@ pub struct Config {
     pub max_items: usize,
     pub auto_paste: bool,
     pub copy_toast: bool,
+    pub check_updates: bool,
     pub theme: ThemePref,
     pub language: LanguagePref,
     pub ignored_apps: Vec<String>,
@@ -104,6 +108,7 @@ impl Default for Config {
             max_items: 5000,
             auto_paste: true,
             copy_toast: true,
+            check_updates: true,
             theme: ThemePref::System,
             language: LanguagePref::System,
             ignored_apps: [
@@ -195,6 +200,7 @@ impl Config {
         doc["hotkey"] = value(self.hotkey.as_str());
         doc["queue_hotkey"] = value(self.queue_hotkey.as_str());
         doc["copy_toast"] = value(self.copy_toast);
+        doc["check_updates"] = value(self.check_updates);
         doc["max_items"] = value(self.max_items as i64);
         doc["auto_paste"] = value(self.auto_paste);
         doc["theme"] = value(self.theme.as_str());
@@ -259,6 +265,7 @@ mod tests {
         c.max_items = 20000;
         c.auto_paste = false;
         c.copy_toast = false;
+        c.check_updates = false;
         c.queue_hotkey = String::new();
         c.theme = ThemePref::Dark;
         c.language = LanguagePref::En;
