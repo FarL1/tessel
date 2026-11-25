@@ -4,6 +4,8 @@
 
 ## [未发布]
 
+## [0.2.1] - 2026-11-25
+
 ### 新增
 
 - 安装完成页：安装程序装好后不再直接弹出剪贴板，而是显示"安装完成"页，由用户选择"现在启动 Tessel""开机时自动启动"，点"完成"（或关闭窗口）后按选择处理；不启动就直接退出
@@ -139,7 +141,8 @@ M1（Windows 本地版）完成，第一个可日常使用的版本。
 - 设置窗口与 `config.toml`（热加载、保留注释）
 - 安装包（Velopack，按用户安装，卸载保留数据）
 
-[未发布]: https://github.com/FarL1/tessel/compare/v0.2.0...HEAD
+[未发布]: https://github.com/FarL1/tessel/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/FarL1/tessel/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/FarL1/tessel/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/FarL1/tessel/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/FarL1/tessel/compare/v0.1.2...v0.1.3
