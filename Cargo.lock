@@ -3576,7 +3576,7 @@ dependencies = [
 
 [[package]]
 name = "icon-gen"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "ico",
  "resvg 0.50.0",
@@ -7102,21 +7102,21 @@ dependencies = [
 
 [[package]]
 name = "spike-clip-capture"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "windows 0.62.2",
 ]
 
 [[package]]
 name = "spike-ime-input"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "gpui-kit",
 ]
 
 [[package]]
 name = "spike-search-bench"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "fastrand",
  "rusqlite",
@@ -7124,14 +7124,14 @@ dependencies = [
 
 [[package]]
 name = "spike-startup-probe"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "windows 0.62.2",
 ]
 
 [[package]]
 name = "spike-webview-baseline"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "tao",
  "wry",
@@ -7571,7 +7571,7 @@ dependencies = [
 
 [[package]]
 name = "tessel"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-channel",
  "embed-resource",
@@ -7587,7 +7587,7 @@ dependencies = [
 
 [[package]]
 name = "tessel-cli"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "clap",
  "serde",
@@ -7599,7 +7599,7 @@ dependencies = [
 
 [[package]]
 name = "tessel-clipboard"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "image",
  "tessel-core",
@@ -7608,7 +7608,7 @@ dependencies = [
 
 [[package]]
 name = "tessel-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "base64 0.22.1",
  "blake3",

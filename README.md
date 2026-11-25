@@ -11,8 +11,9 @@
 <p align="center"><i>An open-source, keyboard-first clipboard manager and clipboard history app for Windows, built with Rust.</i></p>
 
 <p align="center">
+  <a href="https://github.com/FarL1/tessel/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/FarL1/tessel/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="平台" src="https://img.shields.io/badge/平台-Windows%2010%20%7C%2011-4F46E5">
-  <img alt="版本" src="https://img.shields.io/badge/版本-0.1.3（内部测试）-7C3AED">
+  <img alt="版本" src="https://img.shields.io/badge/版本-0.1.4（内部测试）-7C3AED">
   <img alt="许可证" src="https://img.shields.io/badge/许可证-MIT%20OR%20Apache--2.0-0EA5E9">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2024%20edition-E57324">
 </p>
@@ -79,7 +80,7 @@ Tessel 是一个**剪贴板管理器**：它在后台记下你每一次复制（
 
 ## 安装
 
-下载 `Tessel.App-win-Setup.exe` 并运行即可：
+从 [Releases 页面](https://github.com/FarL1/tessel/releases) 下载 `Tessel.App-win-Setup.exe` 并运行即可（首个公开版本 v0.2.0 发布前，可以按下文"开发"一节自己编译打包）：
 
 - 支持 Windows 10 / 11（64 位），按当前用户安装，**不需要管理员权限**
 - 安装到 `%LOCALAPPDATA%\Tessel.App`，创建桌面和开始菜单快捷方式

@@ -4,6 +4,10 @@
 
 ## [未发布]
 
+## [0.1.4] - 2026-11-25
+
+体验打磨（内部测试版）。
+
 ### 新增
 
 - 鼠标操作：右键一条记录（或预览区）在鼠标位置弹出动作菜单；悬停一行时显示"收藏""更多"按钮；预览区底部加了复制、编辑、备注、收藏、打开、更多按钮（悬停有说明）；双击预览内容进入编辑；底栏快捷键提示可以点击
@@ -97,8 +101,9 @@ M1（Windows 本地版）完成，第一个可日常使用的版本。
 - 设置窗口与 `config.toml`（热加载、保留注释）
 - 安装包（Velopack，按用户安装，卸载保留数据）
 
-[未发布]: https://github.com/OWNER/tessel/compare/v0.1.3...HEAD
-[0.1.3]: https://github.com/OWNER/tessel/compare/v0.1.2...v0.1.3
-[0.1.2]: https://github.com/OWNER/tessel/compare/v0.1.1...v0.1.2
-[0.1.1]: https://github.com/OWNER/tessel/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/OWNER/tessel/releases/tag/v0.1.0
+[未发布]: https://github.com/FarL1/tessel/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/FarL1/tessel/compare/v0.1.3...v0.1.4
+[0.1.3]: https://github.com/FarL1/tessel/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/FarL1/tessel/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/FarL1/tessel/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/FarL1/tessel/releases/tag/v0.1.0
