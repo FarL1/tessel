@@ -35,6 +35,8 @@ pub struct Uninstall {
     version: Option<String>,
     running: bool,
     delete_data: bool,
+    /// 程序已经卸载掉了（只剩删除数据出错时，重试只需要再删数据）
+    app_removed: bool,
     logo: Arc<Image>,
     focus: FocusHandle,
 }
@@ -61,6 +63,7 @@ impl Uninstall {
             dir,
             running: system::tessel_running(),
             delete_data: false,
+            app_removed: false,
             logo: ui::logo(),
             focus: cx.focus_handle(),
         }
@@ -76,22 +79,28 @@ impl Uninstall {
         self.page = Page::Removing;
         cx.notify();
         let delete_data = self.delete_data;
+        let app_removed = self.app_removed;
         cx.spawn(async move |this, cx| {
             let started = Instant::now();
-            let result = cx
+            let (removed, result) = cx
                 .background_executor()
                 .spawn(async move {
-                    system::run_uninstall(&dir)?;
-                    if delete_data {
-                        system::delete_data()?;
+                    if !app_removed && let Err(e) = system::run_uninstall(&dir) {
+                        return (false, Err(e));
                     }
-                    Ok::<_, String>(())
+                    let result = if delete_data {
+                        system::delete_data()
+                    } else {
+                        Ok(())
+                    };
+                    (true, result)
                 })
                 .await;
             if let Some(rest) = MIN_BUSY.checked_sub(started.elapsed()) {
                 cx.background_executor().timer(rest).await;
             }
             let _ = this.update(cx, |this, cx| {
+                this.app_removed = removed;
                 this.page = match result {
                     Ok(()) => Page::Done,
                     Err(err) => Page::Failed(err),
@@ -381,7 +390,11 @@ impl Render for Uninstall {
                 "failed",
                 self.render_result(
                     false,
-                    tr("卸载没有完成", "Uninstall didn't finish"),
+                    if self.app_removed {
+                        tr("数据没有删除完", "Your data wasn't fully deleted")
+                    } else {
+                        tr("卸载没有完成", "Uninstall didn't finish")
+                    },
                     err.clone(),
                     &p,
                     cx,

@@ -85,6 +85,8 @@ const PREVIEW_CHARS: usize = 8_000;
 
 /// 行尾两个操作按钮（26px）加间距的宽度
 const ROW_ACTIONS_W: Pixels = px(54.);
+/// 行尾那一块（星标、编号、操作按钮）和左边文字之间额外留出的距离
+const ROW_TRAIL_PAD: Pixels = px(10.);
 
 /// 弹窗的键位表。正式版本里会从用户配置文件加载，允许自定义。
 ///
@@ -1915,34 +1917,35 @@ impl Popup {
             )
             // 右侧：队列序号、收藏星标、编号；鼠标移上来时换成操作按钮。
             // 操作按钮叠在这一块上面，所以鼠标移上来时它至少要和按钮一样宽，否则按钮会盖住左边的文字。
+            // 左边额外留出 ROW_TRAIL_PAD，星标不会贴着文字。
             .child(
                 h_flex()
                     .relative()
                     .flex_none()
-                    .group_hover("row", |s| s.min_w(ROW_ACTIONS_W))
+                    .pl(ROW_TRAIL_PAD)
+                    .group_hover("row", |s| s.min_w(ROW_ACTIONS_W + ROW_TRAIL_PAD))
                     .h_full()
                     .justify_end()
-                    .gap_1p5()
-                    .when_some(queue_pos, |d, n| {
-                        d.child(
-                            h_flex()
-                                .flex_none()
-                                .h(px(18.))
-                                .px_1()
-                                .gap_0p5()
-                                .rounded(px(4.))
-                                .bg(p.accent_soft)
-                                .text_color(p.accent_text)
-                                .text_size(px(11.))
-                                .child(Icon::new(Lucide::ListOrdered).xsmall())
-                                .child(format!("{}", n + 1)),
-                        )
-                    })
-                    // 收藏标记和编号：鼠标移上来时让位给操作按钮
+                    // 队列序号、收藏标记和编号：鼠标移上来时让位给操作按钮
                     .child(
                         h_flex()
-                            .gap_1p5()
+                            .gap_2()
                             .group_hover("row", |s| s.invisible())
+                            .when_some(queue_pos, |d, n| {
+                                d.child(
+                                    h_flex()
+                                        .flex_none()
+                                        .h(px(18.))
+                                        .px_1()
+                                        .gap_0p5()
+                                        .rounded(px(4.))
+                                        .bg(p.accent_soft)
+                                        .text_color(p.accent_text)
+                                        .text_size(px(11.))
+                                        .child(Icon::new(Lucide::ListOrdered).xsmall())
+                                        .child(format!("{}", n + 1)),
+                                )
+                            })
                             .when(clip.pinned, |d| {
                                 d.child(
                                     Icon::new(IconName::StarFill)

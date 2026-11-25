@@ -47,6 +47,8 @@ pub struct Setup {
     autostart: bool,
     /// 点了"完成并启动"，正在等 Tessel 的窗口出现
     launching: bool,
+    /// 完成页上保存开机自启或启动 Tessel 出错
+    finish_error: Option<String>,
     logo: Arc<Image>,
     focus: FocusHandle,
 }
@@ -84,6 +86,7 @@ impl Setup {
             // 新装默认开机自启；更新时沿用原来的选择
             autostart: mode == Mode::Fresh || system::autostart_registered(),
             launching: false,
+            finish_error: None,
             logo: ui::logo(),
             focus: cx.focus_handle(),
         }
@@ -161,20 +164,39 @@ impl Setup {
         if self.launching {
             return;
         }
-        let _ = system::set_autostart(&self.dir, self.autostart);
+        // 出错时留在完成页上说明，不悄悄退出
+        if let Err(e) = system::set_autostart(&self.dir, self.autostart) {
+            self.finish_error = Some(trf!(
+                "没能设置开机自启：{e}。可以取消勾选后再点完成，以后在 Tessel 的设置里打开。",
+                "Couldn't set up start with Windows: {e}. Untick it and finish; you can turn it on later in Tessel's settings."
+            ));
+            cx.notify();
+            return;
+        }
         if !launch {
             cx.quit();
             return;
         }
         self.launching = true;
+        self.finish_error = None;
         cx.notify();
         let dir = self.dir.clone();
-        cx.spawn(async move |_, cx| {
-            let _ = cx
+        cx.spawn(async move |this, cx| {
+            let result = cx
                 .background_executor()
                 .spawn(async move { system::launch_app(&dir) })
                 .await;
-            cx.update(|cx| cx.quit());
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(()) => cx.quit(),
+                Err(e) => {
+                    this.launching = false;
+                    this.finish_error = Some(trf!(
+                        "没能启动 Tessel：{e}。可以从开始菜单打开它。",
+                        "Couldn't start Tessel: {e}. You can open it from the Start menu."
+                    ));
+                    cx.notify();
+                }
+            });
         })
         .detach();
     }
@@ -199,6 +221,8 @@ impl Closable for Setup {
             // 安装过程中不能中途退出
             Page::Installing => {}
             // 关闭 = 不启动（开机自启按勾选保存）
+            // 已经显示过出错提示的话，再关就直接退出
+            Page::Done if self.finish_error.is_some() && !self.launching => cx.quit(),
             Page::Done => self.finish(false, cx),
             Page::Welcome | Page::Failed(_) => cx.quit(),
         }
@@ -593,7 +617,10 @@ impl Setup {
                     .gap_6()
                     .child(heading)
                     .child(tip)
-                    .child(options),
+                    .child(options)
+                    .when_some(self.finish_error.clone(), |d, e| {
+                        d.child(ui::notice(e, true, p))
+                    }),
             )
             .child(ui::footer(
                 div(),
@@ -640,10 +667,16 @@ impl Setup {
                                             .text_color(p.text)
                                             .child(tr("安装没有完成", "Setup didn't finish")),
                                     )
-                                    .child(div().text_sm().text_color(p.muted).child(tr(
-                                        "这台电脑上原来的 Tessel 没有被改动。",
-                                        "Nothing was changed on this PC.",
-                                    ))),
+                                    .child(div().text_sm().text_color(p.muted).child(
+                                        if self.mode == Mode::Fresh {
+                                            tr("Tessel 还没有装上。", "Tessel wasn't installed.")
+                                        } else {
+                                            tr(
+                                                "原来的 Tessel 可能已经被关闭，重试成功后就能继续使用。",
+                                                "Your existing Tessel may have been closed. It will work again once setup succeeds.",
+                                            )
+                                        },
+                                    )),
                             ),
                     )
                     .child(

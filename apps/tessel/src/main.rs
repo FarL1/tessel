@@ -535,6 +535,8 @@ fn main() {
         .on_before_uninstall_fast_callback(|_| {
             let _ = win::set_autostart(false);
         })
+        // 应用更新时 Velopack 会把"设置 → 应用"里的卸载入口改回它自己的，这里再指回我们的卸载程序
+        .on_after_update_fast_callback(|_| win::claim_uninstall_entry())
         .on_first_run(|_| first_run.set(true))
         .run();
     let first_run = first_run.get();
@@ -555,6 +557,8 @@ fn main() {
         return;
     }
     log_line(format!("[store] 数据目录 {}", dir.display()));
+    // 更新钩子没跑成功时的兜底（只在卸载入口被改回去时才写注册表）
+    win::claim_uninstall_entry();
 
     // 配置：读取失败时用默认值启动，并在界面上提示
     // 界面语言：读配置之前先按系统语言（配置出错的提示也要能看懂）

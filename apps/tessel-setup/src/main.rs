@@ -21,7 +21,12 @@ use tessel_core::Config;
 use tessel_core::i18n;
 
 fn main() {
-    let uninstalling = std::env::args().any(|a| a == "--uninstall");
+    // "设置 → 应用"带 --uninstall 启动；用户也可能直接双击安装目录里的 Uninstall Tessel.exe
+    let uninstalling = std::env::args().any(|a| a == "--uninstall")
+        || std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .is_some_and(|name| name.eq_ignore_ascii_case(system::UNINSTALLER));
     // 卸载会删除整个安装目录：先把自己复制到临时目录再运行（模拟模式下不需要）
     if uninstalling && system::dry_run().is_none() && system::relaunch_from_temp_if_needed() {
         return;

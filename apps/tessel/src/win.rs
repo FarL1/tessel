@@ -611,6 +611,70 @@ pub fn set_autostart(enabled: bool) -> Result<(), String> {
     err.ok().map_err(|e| e.to_string())
 }
 
+/// 让"设置 → 应用"里的卸载入口指向安装目录里我们自己的卸载程序（`Uninstall Tessel.exe`）。
+///
+/// 安装程序装好后会改一次，但 Velopack 每次应用更新都会重写卸载信息，改回它自己的
+/// `Update.exe --uninstall`；所以更新后的钩子、以及每次启动时都检查一下。
+/// 不是用新安装程序装的（安装目录里没有卸载程序）、测试 / 开发实例都不改。
+pub fn claim_uninstall_entry() {
+    if std::env::var_os("TESSEL_DATA_DIR").is_some() {
+        return;
+    }
+    // 安装目录结构：<root>\current\tessel.exe、<root>\Update.exe、<root>\Uninstall Tessel.exe
+    let Some(root) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.parent()?.to_path_buf()))
+    else {
+        return;
+    };
+    let uninstaller = root.join("Uninstall Tessel.exe");
+    if !uninstaller.is_file() || !root.join("Update.exe").is_file() {
+        return;
+    }
+    use windows::Win32::System::Registry::{
+        HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegGetValueW, RegSetKeyValueW,
+    };
+    const KEY: windows::core::PCWSTR =
+        w!(r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Tessel.App");
+    let cmd = format!("\"{}\" --uninstall", uninstaller.display());
+    let mut buf = [0u16; 1024];
+    let mut size = (buf.len() * 2) as u32;
+    let current = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            KEY,
+            w!("UninstallString"),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr() as *mut _),
+            Some(&mut size),
+        )
+    };
+    // 没有这个键（比如便携版）就不创建
+    if current.is_err() {
+        return;
+    }
+    let len = (size as usize / 2).saturating_sub(1);
+    if String::from_utf16_lossy(&buf[..len]).eq_ignore_ascii_case(&cmd) {
+        return;
+    }
+    let wide: Vec<u16> = cmd.encode_utf16().chain(std::iter::once(0)).collect();
+    let err = unsafe {
+        RegSetKeyValueW(
+            HKEY_CURRENT_USER,
+            KEY,
+            w!("UninstallString"),
+            REG_SZ.0,
+            Some(wide.as_ptr() as *const _),
+            (wide.len() * 2) as u32,
+        )
+    };
+    crate::log_line(match err.ok() {
+        Ok(()) => "[setup] 卸载入口已指向 Uninstall Tessel.exe".into(),
+        Err(e) => format!("[setup] ⚠ 无法更新卸载入口：{e}"),
+    });
+}
+
 /// Windows 显示语言是不是中文（简体、繁体都算）
 pub fn system_is_chinese() -> bool {
     const LANG_CHINESE: u16 = 0x04;

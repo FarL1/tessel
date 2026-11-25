@@ -105,8 +105,10 @@ pub fn check_target(dir: &Path) -> Result<(), String> {
             data_dir().display()
         ));
     }
-    // 已有其他文件的文件夹：Velopack 会清空它
-    if dir.is_dir() && !is_tessel_install(dir) {
+    // 已有其他文件的文件夹：Velopack 会清空它。
+    // 默认位置（Velopack 专用的 Tessel.App）、以及里面有我们的卸载程序的文件夹（上次卸载的残留）除外。
+    let ours = lower(dir) == lower(&default_install_dir()) || dir.join(UNINSTALLER).is_file();
+    if dir.is_dir() && !is_tessel_install(dir) && !ours {
         let has_files = std::fs::read_dir(dir)
             .map(|mut it| it.next().is_some())
             .unwrap_or(true);
@@ -213,10 +215,16 @@ pub fn run_velopack(setup: &Path, dir: &Path) -> Result<(), String> {
     )
     .status()
     .map_err(|e| trf!("无法运行安装程序：{e}", "Could not run the installer: {e}"))?;
-    if status.success() && app_exe(dir).exists() {
-        Ok(())
-    } else {
+    if !status.success() {
         Err(exit_error(status, "安装程序", "installer"))
+    } else if !app_exe(dir).exists() {
+        Err(trf!(
+            "安装程序已经结束，但没有找到 {}。",
+            "Setup finished, but {} is missing.",
+            app_exe(dir).display()
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -383,23 +391,31 @@ fn has_visible_window(_pid: u32) -> bool {
     true
 }
 
+/// 临时目录里的那份卸载程序带这个参数启动
+const FROM_TEMP: &str = "--from-temp";
+
+fn is_temp_copy() -> bool {
+    std::env::args().any(|a| a == FROM_TEMP)
+}
+
 /// 卸载程序在安装目录里运行时，先把自己复制到临时目录再运行：
 /// 卸载要删除整个安装目录，正在运行的 exe 删不掉。返回 true 表示已经转交，当前进程应退出。
+/// （用参数而不是比较路径来判断"已经在临时目录里"：路径可能有短文件名等不同写法，比较不可靠）
 pub fn relaunch_from_temp_if_needed() -> bool {
+    if is_temp_copy() {
+        return false;
+    }
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
     let temp = std::env::temp_dir();
-    if exe.starts_with(&temp) {
-        return false;
-    }
     let copy = temp.join(format!("tessel-uninstall-{}.exe", std::process::id()));
     if std::fs::copy(&exe, &copy).is_err() {
         return false;
     }
     allow_foreground();
     std::process::Command::new(&copy)
-        .args(std::env::args_os().skip(1))
+        .args(["--uninstall", FROM_TEMP])
         .current_dir(&temp)
         .spawn()
         .is_ok()
@@ -407,10 +423,17 @@ pub fn relaunch_from_temp_if_needed() -> bool {
 
 /// 卸载程序退出后删除临时目录里的自己
 pub fn schedule_self_delete() {
+    if !is_temp_copy() {
+        return;
+    }
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    if !exe.starts_with(std::env::temp_dir()) {
+    // 只删自己复制出来的那份（文件名是 relaunch_from_temp_if_needed 起的）
+    if !exe
+        .file_name()
+        .is_some_and(|n| n.to_string_lossy().starts_with("tessel-uninstall-"))
+    {
         return;
     }
     let script = format!("ping -n 3 127.0.0.1 >nul & del /f /q \"{}\"", exe.display());
@@ -555,5 +578,17 @@ mod tests {
         assert!(check_target(&data_dir().join("sub")).is_err());
         // 数据目录的上级（%LOCALAPPDATA%）本身也不行：会包含数据目录
         assert!(check_target(&local_app_data()).is_err());
+    }
+
+    #[test]
+    fn leftover_uninstaller_does_not_block_reinstall() {
+        let dir = std::env::temp_dir().join(format!("tessel-target-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("other.txt"), b"x").unwrap();
+        assert!(check_target(&dir).is_err(), "有其他文件的文件夹要拒绝");
+        std::fs::remove_file(dir.join("other.txt")).unwrap();
+        std::fs::write(dir.join(UNINSTALLER), b"x").unwrap();
+        assert!(check_target(&dir).is_ok(), "只剩上次的卸载程序时可以装");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
