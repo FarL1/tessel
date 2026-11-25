@@ -303,10 +303,12 @@ UI 技术待定：Android 用 Jetpack Compose，iOS 用 SwiftUI，这是最自�
 - [x] 备注与标签（`F2`）：`note` 列，`#标签` 写在备注里，`#标签` / `tag:` 过滤；全文索引改由 INSERT / UPDATE / DELETE 三个触发器维护（数据库 v3）
 - [x] 数据导入导出：JSON Lines（`tessel-core::backup`），图片和富格式 base64 内嵌，逐行读写；按内容哈希合并，新记录排在现有记录之后；分批提交，导入时采集照常进行
 - [x] CLI：`apps/tessel-cli`（search / get / copy / add / snippets / export / import），直接读写数据库，不依赖桌面端运行
-- [ ] 本地 IPC（命名管道）：让 CLI 能操作运行中的桌面端（粘贴队列、唤起弹窗）
-- [ ] 自动更新：等 GitHub 仓库和发布源就绪；velopack 1.3 目前是预发布版（1.3.39，2026-10），1.2.161 仍是最新正式版，届时再升级
-- **首个公开版本（v0.2.0）**（0.1.0 是 M1 完成时的内部版本），开始收集用户反馈
-- 发布前：升级 velopack 到 1.3（zip 漏洞，见 deny.toml）、代码签名（SignPath Foundation 申请）、自动更新发布源（GitHub Releases）
+- [x] CLI 控制运行中的桌面端：`tessel-cli show / settings / paste-next`，复用单实例的命名事件（`tessel-core::instance`），不开端口、不建管道
+- [x] 图片文字识别（OCR）：`Windows.Media.Ocr`，后台线程，启动时补识别；`ocr` 列进全文索引和拼音索引（数据库 v5）
+- [x] 检查更新：每天读一次 GitHub 最新正式版本，托盘菜单 + 提示 + 设置页；`check_updates` 可关闭
+- [x] **首个公开版本（v0.2.0）**（0.1.x 是内部测试版），开始收集用户反馈
+- [ ] 自动安装更新：等 velopack 1.3 出正式版（1.3.39 仍是预发布，1.2.x 依赖的 zip 有解压漏洞）再接入 UpdateManager
+- [ ] 代码签名：项目公开后申请 SignPath Foundation
 
 ### M3：多设备同步（桌面 ↔ 桌面）
 

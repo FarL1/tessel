@@ -4,14 +4,33 @@
 
 ## [未发布]
 
+## [0.2.0] - 2026-11-25
+
+首个公开版本。相对 0.1.x 内部测试版的主要变化见下，以及 0.1.2–0.1.4 的条目。
+
+### 新增
+
+- 图片文字识别（OCR）：复制的图片、截图在后台用 Windows 自带的 `Windows.Media.Ocr` 离线识别，识别出的文字可以搜索（也支持拼音首字母）；图片预览下方显示文字，动作菜单里可以"粘贴图片里的文字"；已有的图片会在启动后补识别（数据库 v5）
+- 检查更新：每天检查一次 GitHub 上的最新正式版本，有新版本时托盘菜单出现"下载新版本"并提示一次；设置 → 关于 里可以立即检查、关闭自动检查（`check_updates`）。暂不自动安装
+- 命令行控制正在运行的 Tessel：`tessel-cli show`、`settings`、`paste-next`（和"再次启动 Tessel 时唤起已有窗口"是同一套命名事件）
+- 设置窗口左上角有"返回"按钮，`Esc` 也可以返回弹窗
+
 ### 变更
 
+- 设置窗口和弹窗一样大，从弹窗点进来时窗口不再忽大忽小
 - README 默认显示英文版（截图换成英文界面和英文演示数据），中文版移到 `README.zh-CN.md`，顶部可以互相切换
 - 演示数据生成器新增 `--demo-en`（英文演示数据）
+- 依赖：base64 0.23；GitHub Actions：checkout v7、setup-dotnet v6、action-gh-release v3
+- 发版流程不再为 0.1.x 内部测试版的标签打包
 
 ### 修复
 
 - 预览区底部加了操作按钮后，图片预览下方的"Ctrl+O 打开"提示被挤掉一半
+
+### 已知问题
+
+- 安装包还没有代码签名，Windows SmartScreen 会提示"已保护你的电脑"
+- 中文系统下，图片里的英文识别得不够准（识别语言跟随系统显示语言）
 
 ## [0.1.4] - 2026-11-25
 
@@ -110,7 +129,8 @@ M1（Windows 本地版）完成，第一个可日常使用的版本。
 - 设置窗口与 `config.toml`（热加载、保留注释）
 - 安装包（Velopack，按用户安装，卸载保留数据）
 
-[未发布]: https://github.com/FarL1/tessel/compare/v0.1.4...HEAD
+[未发布]: https://github.com/FarL1/tessel/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/FarL1/tessel/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/FarL1/tessel/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/FarL1/tessel/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/FarL1/tessel/compare/v0.1.1...v0.1.2

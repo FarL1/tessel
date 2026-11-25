@@ -13,7 +13,7 @@
 <p align="center">
   <a href="https://github.com/FarL1/tessel/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/FarL1/tessel/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="平台" src="https://img.shields.io/badge/平台-Windows%2010%20%7C%2011-4F46E5">
-  <img alt="版本" src="https://img.shields.io/badge/版本-0.1.4（内部测试）-7C3AED">
+  <a href="https://github.com/FarL1/tessel/releases/latest"><img alt="版本" src="https://img.shields.io/github/v/release/FarL1/tessel?label=版本&color=7C3AED"></a>
   <img alt="许可证" src="https://img.shields.io/badge/许可证-MIT%20OR%20Apache--2.0-0EA5E9">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2024%20edition-E57324">
 </p>
@@ -22,7 +22,7 @@
   <img src="docs/images/overview.png" width="760" alt="Tessel 剪贴板管理器主界面：左侧是剪贴板历史列表，右侧是预览">
 </p>
 
-> **状态**：M1（Windows 本地版）已完成，日常可用；M2（体验打磨）进行中。多设备同步、移动端在后续里程碑中，见[路线图](#路线图)。
+> **状态**：v0.2.0 是首个公开版本。多设备同步、移动端在后续里程碑中，见[路线图](#路线图)。
 
 ## Tessel 是什么
 
@@ -49,7 +49,7 @@ Tessel 是一个**剪贴板管理器**：它在后台记下你每一次复制（
 |---|---|---|
 | 保存多少条 | 最近 25 条 | 默认 5000 条，可调到 10 万条；收藏的永久保留 |
 | 重启电脑后 | 清空（固定的除外） | 全部保留 |
-| 搜索 | 简单过滤 | 全文搜索、拼音首字母、按来源程序 / 类型过滤 |
+| 搜索 | 简单过滤 | 全文搜索、拼音首字母、图片里的文字（OCR）、按来源程序 / 类型过滤 |
 | 粘贴 | 选中后粘贴 | 回车直接粘贴回原窗口；`Ctrl+1–9` 快速粘贴；粘贴队列依次粘贴 |
 | 处理内容 | — | 格式化 JSON、去掉链接追踪参数、转换颜色格式、编辑后再粘贴…… |
 | 数据在哪 | 本机（可选云同步） | 只在本机，开源可查 |
@@ -59,7 +59,7 @@ Tessel 是一个**剪贴板管理器**：它在后台记下你每一次复制（
 - **真正轻量**：基于 [GPUI](https://www.gpui.rs/)（Zed 编辑器的 GPU 渲染 UI 框架）原生绘制，后台常驻内存约 **18MB**，大约是同等 WebView 方案的 1/4。
 - **快**：按下热键约 40ms 出现；几千条历史里搜索只要几毫秒；列表是虚拟列表，历史再多也流畅。
 - **键盘优先**：唤起、搜索、选择、粘贴都不用碰鼠标，`Ctrl+1–9` 快速粘贴，`Tab` 切换分类，`Ctrl+K` 打开动作菜单。
-- **找得到**：全文搜索，中文两个字也能搜；支持拼音首字母（`hyjy` 找到"会议纪要"）；可以按来源程序、类型过滤；给常用的内容加备注和 `#标签`。
+- **找得到**：全文搜索，中文两个字也能搜；支持拼音首字母（`hyjy` 找到"会议纪要"）；截图、图片里的文字也能搜（用 Windows 自带的 OCR 离线识别）；可以按来源程序、类型过滤；给常用的内容加备注和 `#标签`。
 - **粘贴队列**：先把几段内容排好队，再在目标程序里每按一次 `Alt+Shift+V` 粘贴一条，填表、搬资料不用来回切窗口。
 - **片段和模板**：常用的文字存成片段，粘贴时自动填入日期、时间、上一次复制的内容，还能指定粘贴后光标停在哪。
 - **中文 / English**：界面可以在设置里切换成英文，默认跟随系统。
@@ -80,13 +80,15 @@ Tessel 是一个**剪贴板管理器**：它在后台记下你每一次复制（
 
 ## 安装
 
-从 [Releases 页面](https://github.com/FarL1/tessel/releases) 下载 `Tessel.App-win-Setup.exe` 并运行即可（首个公开版本 v0.2.0 发布前，可以按下文"开发"一节自己编译打包）：
+从 [最新版本](https://github.com/FarL1/tessel/releases/latest) 下载 `Tessel.App-win-Setup.exe` 并运行即可：
 
 - 支持 Windows 10 / 11（64 位），按当前用户安装，**不需要管理员权限**
 - 安装到 `%LOCALAPPDATA%\Tessel.App`，创建桌面和开始菜单快捷方式
 - 卸载：在"设置 → 应用"里卸载。会一并关闭开机自启；**历史数据会保留**在 `%LOCALAPPDATA%\Tessel`，不需要可以手动删除
 
-> 安装包目前没有代码签名，Windows 可能提示"已保护你的电脑"，点"更多信息 → 仍要运行"。签名会在首个公开版本前解决。
+> 安装包目前没有代码签名，Windows 可能提示"已保护你的电脑"，点"更多信息 → 仍要运行"。代码签名正在申请中。
+
+Tessel 每天检查一次 GitHub 上有没有新版本，有的话会提示你（托盘菜单 →"下载新版本"）。目前还不会自动安装：下载新的安装包运行即可，历史数据会保留。
 
 ## 使用
 
@@ -141,6 +143,8 @@ Tessel 是一个**剪贴板管理器**：它在后台记下你每一次复制（
 
 例如片段 `您好 {cursor}，附件是 {date} 的周报。` 粘贴后，光标正好停在"您好"后面。只有片段才会替换变量，普通历史里的 `{date}` 原样粘贴。
 
+**图片里的文字（OCR）**：复制的图片、截图会在后台用 Windows 自带的文字识别离线识别（不需要下载任何东西），识别出的文字可以搜索；图片预览下方会显示，`Ctrl+K` 菜单里可以直接粘贴。识别语言跟随 Windows 显示语言，中文系统下图片里的英文识别得没那么准。
+
 **复制提示**：每次复制成功，屏幕底部会出现一个小提示，显示复制了什么，1.5 秒后自动消失；
 它不会抢走焦点，不影响正在输入的内容。不需要的话可以在设置里关掉。
 
@@ -161,6 +165,7 @@ Tessel 是一个**剪贴板管理器**：它在后台记下你每一次复制（
 | `max_items` | `5000` | 最多保留的历史条数（收藏不计入） |
 | `auto_paste` | `true` | 选中后直接粘贴；`false` 则只复制到剪贴板 |
 | `copy_toast` | `true` | 复制成功时在屏幕底部显示提示 |
+| `check_updates` | `true` | 每天检查一次 GitHub 上有没有新版本 |
 | `language` | `"system"` | 界面语言：`"system"`（跟随 Windows 显示语言）/ `"zh"` / `"en"` |
 | `theme` | `"system"` | `"system"`（跟随系统）/ `"light"` / `"dark"` |
 | `ignored_apps` | 常见密码管理器 | 不记录这些程序复制的内容（按 exe 文件名，不区分大小写） |
@@ -181,11 +186,17 @@ tessel-cli get 1                       # 输出最新一条的完整内容
 tessel-cli copy --snippet 签名         # 把备注里带"签名"的片段放到剪贴板（变量已替换）
 "常用回复" | tessel-cli add --snippet --note "回复 #客服"   # 新建片段
 tessel-cli export 备份.jsonl           # 导出（--kept 只导出收藏和片段）；import 导入
+tessel-cli show                        # 唤起正在运行的 Tessel 的弹窗（settings 打开设置）
+tessel-cli paste-next                  # 粘贴队列里的下一条到当前窗口
 ```
+
+大部分命令直接读写数据，`show`、`settings`、`paste-next` 需要 Tessel 正在运行。
 
 ## 隐私
 
 - 所有数据只保存在本机：`%LOCALAPPDATA%\Tessel\`（`tessel.db` + `images/` + `config.toml`）。没有账号、没有云端、没有统计上报。
+- 唯一的网络请求是每天一次的检查更新：从 GitHub 读取公开的最新版本信息，不发送任何关于你的数据；可以在设置里或用 `check_updates = false` 关闭。
+- 图片文字识别在本机完成（Windows 自带的 OCR）。
 - 遵守 Windows 的剪贴板隐私约定：带 `ExcludeClipboardContentFromMonitorProcessing` 或 `CanIncludeInClipboardHistory = 0` 标记的内容，**连读都不读**。
 - "不记录的程序"在读取剪贴板内容之前判断。
 
@@ -206,7 +217,8 @@ tessel-cli export 备份.jsonl           # 导出（--kept 只导出收藏和片
 
 - [x] **M0 技术验证**：GPUI 中文输入、剪贴板采集、热键与粘贴闭环、搜索性能、内存
 - [x] **M1 Windows 本地版**：采集、存储、搜索、富文本、设置、托盘、开机自启、安装包
-- [ ] **M2 体验打磨 + 首个公开版本**：粘贴队列、动作菜单（`Ctrl+K`）、片段与模板、OCR、自动更新、代码签名
+- [x] **M2 体验打磨 + 首个公开版本（v0.2.0）**：粘贴队列、动作菜单（`Ctrl+K`）、片段与模板、备注与标签、拼音搜索、OCR、英文界面、导入导出、命令行、检查更新
+- [ ] 代码签名；自动安装更新（等 Velopack 1.3 正式版）
 - [ ] **M3 多设备同步**：局域网直连、端到端加密、不需要服务器（iroh）
 - [ ] **M4 移动端**：Android 输入法、iOS 键盘与分享扩展
 - [ ] **M5 macOS / Linux + 插件**

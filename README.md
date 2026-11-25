@@ -13,7 +13,7 @@
 <p align="center">
   <a href="https://github.com/FarL1/tessel/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/FarL1/tessel/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-4F46E5">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.1.4%20(preview)-7C3AED">
+  <a href="https://github.com/FarL1/tessel/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/FarL1/tessel?color=7C3AED"></a>
   <img alt="License" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-0EA5E9">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2024%20edition-E57324">
 </p>
@@ -22,7 +22,7 @@
   <img src="docs/images/en/overview.png" width="760" alt="Tessel clipboard manager: clipboard history on the left, preview on the right">
 </p>
 
-> **Status**: M1 (local Windows app) is done and usable every day; M2 (polish) is in progress. Sync across devices and mobile apps come later, see the [roadmap](#roadmap).
+> **Status**: v0.2.0 is the first public release. Sync across devices and mobile apps come later, see the [roadmap](#roadmap).
 
 ## What is Tessel?
 
@@ -49,7 +49,7 @@ If you're looking for any of these, Tessel is that kind of app:
 |---|---|---|
 | How much it keeps | The last 25 items | 5,000 by default, up to 100,000; pinned items are kept forever |
 | After a restart | Cleared (except pinned items) | Everything is kept |
-| Search | Basic filtering | Full-text search, filters by app and type, pinyin initials for Chinese text |
+| Search | Basic filtering | Full-text search, text inside screenshots (OCR), filters by app and type, pinyin initials for Chinese text |
 | Pasting | Pick an item to paste | `Enter` pastes into the previous window; `Ctrl+1–9` quick paste; a paste queue |
 | Working with content | — | Format JSON, strip tracking parameters from links, convert colors, edit before pasting… |
 | Where your data lives | On your PC (optional cloud sync) | Only on your PC, open source |
@@ -60,7 +60,7 @@ If you're looking for any of these, Tessel is that kind of app:
 - **Fast**: shows up about 40 ms after the hotkey; searching thousands of items takes a few milliseconds; the list is virtualized, so it stays smooth however long your history gets.
 - **Keyboard first**: open, search, pick and paste without touching the mouse. `Ctrl+1–9` quick paste, `Tab` to switch categories, `Ctrl+K` for the action menu.
 - **Works with the mouse too**: right-click any item for the action menu, hover for quick buttons, double-click to paste.
-- **Finds things**: full-text search; filter by source app or type; add notes and `#tags` to things you use often. For Chinese text, pinyin initials work too (`hyjy` finds "会议纪要").
+- **Finds things**: full-text search, including the text inside images and screenshots (recognized offline with the OCR built into Windows); filter by source app or type; add notes and `#tags` to things you use often. For Chinese text, pinyin initials work too (`hyjy` finds "会议纪要").
 - **Paste queue**: line up several clips, then press `Alt+Shift+V` in the target app to paste them one by one. Great for filling in forms.
 - **Snippets and templates**: save text you reuse as snippets; dates, times and your last copy are filled in when you paste, and you can choose where the cursor ends up.
 - **English / 中文**: the interface follows your Windows display language and can be switched in Settings.
@@ -81,13 +81,15 @@ Where the name comes from: *tessellation*. Every copy is a tile, and together th
 
 ## Install
 
-Download `Tessel.App-win-Setup.exe` from the [Releases page](https://github.com/FarL1/tessel/releases) and run it. (Until the first public release, v0.2.0, you can build the installer yourself, see [Development](#development).)
+Download `Tessel.App-win-Setup.exe` from the [latest release](https://github.com/FarL1/tessel/releases/latest) and run it.
 
 - Windows 10 / 11 (64-bit). Installs for the current user, **no administrator rights needed**
 - Installs to `%LOCALAPPDATA%\Tessel.App` and adds desktop and Start menu shortcuts
 - To uninstall, use Settings → Apps. This also turns off start-up with Windows; **your history is kept** in `%LOCALAPPDATA%\Tessel` and can be deleted by hand
 
-> The installer isn't code-signed yet, so Windows may show "Windows protected your PC". Click "More info → Run anyway". Signing will be sorted out before the first public release.
+> The installer isn't code-signed yet, so Windows may show "Windows protected your PC". Click "More info → Run anyway". Code signing is in progress.
+
+Tessel checks GitHub once a day for a new version and tells you when one is out (tray menu → "Download Tessel x.y.z"). Updates aren't installed automatically yet: download the new installer and run it; your history is kept.
 
 ## Usage
 
@@ -142,6 +144,8 @@ Snippets are never cleaned up, live under the Snippets category, and their varia
 
 For example, `Hi {cursor}, here is the report for {date}.` pastes with the cursor right after "Hi ". Only snippets are expanded; a `{date}` in ordinary history pastes as is.
 
+**Text in images (OCR)**: text in images and screenshots you copy is recognized in the background with the OCR built into Windows (offline, nothing to download), so you can search for it. The image preview shows the text, and the `Ctrl+K` menu can paste it. Recognition uses your Windows display language; on Chinese Windows, English text in images is recognized less reliably.
+
 **Copy hint**: after each copy, a small hint at the bottom of the screen shows what was copied and fades out after 1.5 seconds.
 It never takes the focus away from what you're typing. You can turn it off in Settings.
 
@@ -162,6 +166,7 @@ The Settings window reads and writes `config.toml` in the data folder. You can a
 | `max_items` | `5000` | How many items to keep (pinned items don't count) |
 | `auto_paste` | `true` | Paste on selection; `false` only copies to the clipboard |
 | `copy_toast` | `true` | Show a hint at the bottom of the screen after each copy |
+| `check_updates` | `true` | Check GitHub once a day for a new version |
 | `language` | `"system"` | Interface language: `"system"` (follows Windows) / `"zh"` / `"en"` |
 | `theme` | `"system"` | `"system"` / `"light"` / `"dark"` |
 | `ignored_apps` | Common password managers | Never record copies from these programs (exe file name, case-insensitive) |
@@ -182,11 +187,17 @@ tessel-cli get 1                       # print the newest item in full
 tessel-cli copy --snippet signature    # put the snippet whose note contains "signature" on the clipboard (variables filled in)
 "Thanks for reaching out!" | tessel-cli add --snippet --note "reply #support"   # create a snippet
 tessel-cli export backup.jsonl         # export (--kept: only pinned items and snippets); import to bring it back
+tessel-cli show                        # open the popup of the running Tessel (also: settings)
+tessel-cli paste-next                  # paste the next queued item into the active window
 ```
+
+Most commands work on the data directly; `show`, `settings` and `paste-next` need Tessel to be running.
 
 ## Privacy
 
 - Everything is stored only on your PC: `%LOCALAPPDATA%\Tessel\` (`tessel.db` + `images/` + `config.toml`). No account, no cloud, no telemetry.
+- The only network request is the daily update check, which reads the public latest-release information from GitHub and sends nothing about you. Turn it off with `check_updates = false` or in Settings.
+- Text recognition in images runs locally with the OCR built into Windows.
 - Follows the Windows clipboard privacy conventions: content marked with `ExcludeClipboardContentFromMonitorProcessing` or `CanIncludeInClipboardHistory = 0` is **not even read**.
 - Excluded apps are checked before the clipboard content is read.
 
@@ -207,7 +218,8 @@ Known issue: a cold start takes about 1.6–3 seconds, mostly GPUI's font checks
 
 - [x] **M0 feasibility**: GPUI text input with Chinese IMEs, clipboard capture, hotkey-to-paste loop, search speed, memory
 - [x] **M1 local Windows app**: capture, storage, search, rich text, settings, tray, start with Windows, installer
-- [ ] **M2 polish + first public release**: paste queue, action menu (`Ctrl+K`), snippets and templates, OCR, auto-update, code signing
+- [x] **M2 polish + first public release (v0.2.0)**: paste queue, action menu (`Ctrl+K`), snippets and templates, notes and tags, pinyin search, OCR, English UI, import/export, command line, update check
+- [ ] Code signing; automatic installation of updates (waiting for Velopack 1.3 stable)
 - [ ] **M3 sync across devices**: direct LAN connections, end-to-end encryption, no server needed (iroh)
 - [ ] **M4 mobile**: Android keyboard, iOS keyboard and share extension
 - [ ] **M5 macOS / Linux + plugins**
