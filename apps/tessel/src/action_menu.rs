@@ -19,6 +19,7 @@ use crate::design::{self, Palette};
 actions!(action_menu, [MenuPrev, MenuNext, MenuConfirm, MenuClose]);
 
 pub const CONTEXT: &str = "ActionMenu";
+const MENU_W: f32 = 380.;
 
 /// 菜单打开时的键位。必须在弹窗的键位之后注册，同一深度以后注册的为准。
 pub fn bind_keys(cx: &mut App) {
@@ -53,6 +54,11 @@ gpui_kit::assets::icon_assets!(
         CaseLower,
         Trash,
         Command,
+        Ellipsis,
+        Copy,
+        Star,
+        StarOff,
+        ExternalLink,
         Check,
         ListOrdered,
         ListPlus,
@@ -186,6 +192,8 @@ pub struct ActionMenu {
     visible: Vec<usize>,
     selected: usize,
     scroll: ScrollHandle,
+    /// 右键打开时菜单出现在鼠标位置（窗口坐标）；键盘打开时为空，显示在右下角
+    anchor: Option<Point<Pixels>>,
 }
 
 impl ActionMenu {
@@ -436,7 +444,14 @@ impl ActionMenu {
             visible,
             selected: 0,
             scroll: ScrollHandle::new(),
+            anchor: None,
         }
+    }
+
+    /// 在鼠标位置打开（右键菜单）
+    pub fn at(mut self, anchor: Point<Pixels>) -> Self {
+        self.anchor = Some(anchor);
+        self
     }
 
     pub fn set_query(&mut self, query: &str) {
@@ -554,10 +569,22 @@ impl ActionMenu {
             .id("action-menu")
             .key_context(CONTEXT)
             .absolute()
-            .right(px(14.))
-            .bottom(px(46.))
-            .w(px(380.))
-            .max_h(px(400.))
+            .w(px(MENU_W))
+            .map(|d| match self.anchor {
+                None => d.right(px(14.)).bottom(px(46.)).max_h(px(400.)),
+                // 鼠标位置：横向不超出窗口；在上半部分点的向下展开，下半部分点的向上展开
+                Some(at) => {
+                    let (win_w, win_h) = (design::WINDOW_W, design::WINDOW_H);
+                    let left = f32::from(at.x).clamp(8., win_w - 8. - MENU_W);
+                    let y = f32::from(at.y);
+                    let d = d.left(px(left));
+                    if y < win_h / 2. {
+                        d.top(px(y + 2.)).max_h(px((win_h - y - 12.).min(400.)))
+                    } else {
+                        d.bottom(px(win_h - y + 2.)).max_h(px((y - 12.).min(400.)))
+                    }
+                }
+            })
             .rounded(design::RADIUS_LG)
             .bg(p.popover)
             .border_1()

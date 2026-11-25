@@ -288,6 +288,29 @@ pub fn make_overlay(raw: isize) {
         let style = GetWindowLongPtrW(hwnd(raw), GWL_EXSTYLE);
         let extra = (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST).0 as isize;
         SetWindowLongPtrW(hwnd(raw), GWL_EXSTYLE, style | extra);
+        // GPUI 的弹出窗口是"有边框的普通窗口"样式，Windows 11 会沿整个窗口矩形画阴影和边框，
+        // 透明区域外面就多出一圈方框。改成无边框弹出样式，并关掉系统的非客户区绘制。
+        use windows::Win32::Graphics::Dwm::{DWMNCRP_DISABLED, DWMWA_NCRENDERING_POLICY};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GWL_STYLE, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOZORDER, WS_POPUP,
+        };
+        SetWindowLongPtrW(hwnd(raw), GWL_STYLE, WS_POPUP.0 as isize);
+        let policy = DWMNCRP_DISABLED;
+        let _ = DwmSetWindowAttribute(
+            hwnd(raw),
+            DWMWA_NCRENDERING_POLICY,
+            &policy as *const _ as *const _,
+            std::mem::size_of_val(&policy) as u32,
+        );
+        let _ = SetWindowPos(
+            hwnd(raw),
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
         let pref = DWMWCP_DONOTROUND;
         let _ = DwmSetWindowAttribute(
             hwnd(raw),
@@ -302,6 +325,67 @@ pub fn make_overlay(raw: isize) {
             windows::Win32::Graphics::Dwm::DWMWA_BORDER_COLOR,
             &none as *const _ as *const _,
             std::mem::size_of_val(&none) as u32,
+        );
+    }
+}
+
+/// 把窗口摆到 `over` 窗口的正中（没有时放到鼠标所在屏幕的中间），不超出屏幕工作区
+pub fn place_over(raw: isize, over: Option<isize>) {
+    unsafe {
+        let mut own = RECT::default();
+        if GetWindowRect(hwnd(raw), &mut own).is_err() {
+            return;
+        }
+        let (w, h) = (own.right - own.left, own.bottom - own.top);
+        let center = match over {
+            Some(o) => {
+                let mut r = RECT::default();
+                if GetWindowRect(hwnd(o), &mut r).is_err() {
+                    return;
+                }
+                POINT {
+                    x: (r.left + r.right) / 2,
+                    y: (r.top + r.bottom) / 2,
+                }
+            }
+            None => {
+                let mut cursor = POINT::default();
+                let _ = GetCursorPos(&mut cursor);
+                let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+                let mut info = MONITORINFO {
+                    cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                    ..Default::default()
+                };
+                if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+                    return;
+                }
+                let work = info.rcWork;
+                POINT {
+                    x: (work.left + work.right) / 2,
+                    y: (work.top + work.bottom) / 2,
+                }
+            }
+        };
+        let monitor = MonitorFromPoint(center, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return;
+        }
+        let work = info.rcWork;
+        let x = (center.x - w / 2).clamp(work.left, (work.right - w).max(work.left));
+        let y = (center.y - h / 2).clamp(work.top, (work.bottom - h).max(work.top));
+        use windows::Win32::UI::WindowsAndMessaging::SWP_NOZORDER;
+        let _ = SetWindowPos(
+            hwnd(raw),
+            None,
+            x,
+            y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
         );
     }
 }

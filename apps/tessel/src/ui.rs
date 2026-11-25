@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable, Theme, ThemeMode};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -422,6 +423,11 @@ impl Popup {
         {
             self.show_toast(Notice::copied(clip), cx);
         }
+    }
+
+    /// 弹窗正在显示时返回它的窗口句柄（设置窗口要在它的位置打开）
+    pub fn visible_hwnd(&self) -> Option<isize> {
+        self.visible.then_some(self.hwnd)
     }
 
     pub fn reset_position(&mut self) {
@@ -1256,22 +1262,39 @@ impl Popup {
     }
 
     fn open_settings(&mut self, cx: &mut Context<Self>) {
-        // 先隐藏弹窗再打开设置窗口（弹窗是置顶的，不收起会挡住设置窗口）
-        self.hide(false, cx);
+        // 不先收起弹窗：设置窗口在弹窗原来的位置打开，拿到焦点后弹窗自然收起，
+        // 看起来是弹窗"变成"了设置窗口，而不是消失之后再从屏幕中间冒出来
+        let _ = cx;
         let _ = self.tx.try_send(AppCommand::OpenSettingsWindow);
     }
 
     fn on_open_menu(&mut self, _: &OpenActionMenu, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_menu_for(self.selected, None, window, cx);
+    }
+
+    /// 打开第 `pos` 条的动作菜单。`anchor`：右键、"更多"按钮的鼠标位置；键盘打开时为空
+    fn open_menu_for(
+        &mut self,
+        pos: usize,
+        anchor: Option<Point<Pixels>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.busy() {
             return;
         }
-        let Some(clip) = self.full_clip(self.selected) else {
+        let Some(clip) = self.full_clip(pos) else {
             return;
         };
+        self.selected = pos;
         self.menu_search
             .update(cx, |state, cx| state.set_value("", window, cx));
         let queued = self.queue.iter().position(|u| *u == clip.uuid);
-        self.menu = Some(ActionMenu::new(&clip, queued, self.queue.len()));
+        let menu = ActionMenu::new(&clip, queued, self.queue.len());
+        self.menu = Some(match anchor {
+            Some(at) => menu.at(at),
+            None => menu,
+        });
         self.menu_search
             .update(cx, |state, cx| state.focus(window, cx));
         cx.notify();
@@ -1442,6 +1465,28 @@ fn kind_badge(clip: &Clip, p: &Palette, size: Pixels) -> Div {
             .small()
             .text_color(p.kind_color(clip.kind)),
     )
+}
+
+/// 小图标按钮（悬停时显示说明）
+fn icon_button(
+    id: impl Into<ElementId>,
+    icon: Lucide,
+    tip: &'static str,
+    p: Palette,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .size(px(26.))
+        .flex_none()
+        .rounded(design::RADIUS_SM)
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .text_color(p.text_muted)
+        .hover(move |s| s.bg(p.hover).text_color(p.text))
+        .child(Icon::new(icon).small())
+        .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
 }
 
 /// 键帽样式的快捷键提示
@@ -1736,6 +1781,13 @@ impl Popup {
                 )
             })
             .when(!is_selected, |d| d.hover(move |s| s.bg(p.hover)))
+            .group("row")
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    this.open_menu_for(pos, Some(event.position), window, cx);
+                }),
+            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
@@ -1808,14 +1860,70 @@ impl Popup {
                                 .child(format!("{}", n + 1)),
                         )
                     })
-                    .when(clip.pinned, |d| {
-                        d.child(
-                            Icon::new(IconName::StarFill)
-                                .xsmall()
-                                .text_color(rgb(0xF5A524)),
+                    // 收藏标记和编号：鼠标移上来时让位给操作按钮
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .group_hover("row", |s| s.invisible())
+                            .when(clip.pinned, |d| {
+                                d.child(
+                                    Icon::new(IconName::StarFill)
+                                        .xsmall()
+                                        .text_color(rgb(0xF5A524)),
+                                )
+                            })
+                            .when(pos < 9, |d| d.child(kbd(format!("{}", pos + 1), &p))),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .absolute()
+                    .right(px(6.))
+                    .top_0()
+                    .bottom_0()
+                    .gap_0p5()
+                    .invisible()
+                    .group_hover("row", |s| s.visible())
+                    .child(
+                        icon_button(
+                            ("row-pin", pos),
+                            if clip.pinned {
+                                Lucide::StarOff
+                            } else {
+                                Lucide::Star
+                            },
+                            if clip.pinned {
+                                tr("取消收藏 · Ctrl+P", "Unpin · Ctrl+P")
+                            } else {
+                                tr("收藏 · Ctrl+P", "Pin · Ctrl+P")
+                            },
+                            p,
                         )
-                    })
-                    .when(pos < 9, |d| d.child(kbd(format!("{}", pos + 1), &p))),
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                if !this.busy() {
+                                    this.toggle_pin(pos, cx);
+                                }
+                            }),
+                        ),
+                    )
+                    .child(
+                        icon_button(
+                            ("row-more", pos),
+                            Lucide::Ellipsis,
+                            tr("更多动作 · Ctrl+K", "More actions · Ctrl+K"),
+                            p,
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.open_menu_for(pos, Some(event.position), window, cx);
+                            }),
+                        ),
+                    ),
             )
             .into_any_element()
     }
@@ -1857,7 +1965,8 @@ impl Popup {
             .child(div().text_xs().child(subtitle))
     }
 
-    fn render_preview(&self, clip: &Clip, p: &Palette) -> impl IntoElement {
+    fn render_preview(&self, clip: &Clip, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
+        let pos = self.selected;
         let mono = "Cascadia Mono";
         let body: AnyElement = match clip.kind {
             Kind::Text => div()
@@ -2189,9 +2298,133 @@ impl Popup {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    // 双击编辑文字；右键打开动作菜单
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            if event.click_count >= 2 && !this.busy() {
+                                this.start_edit(pos, window, cx);
+                            }
+                        }),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            this.open_menu_for(pos, Some(event.position), window, cx);
+                        }),
+                    )
                     .child(body),
             )
-            .child(div().text_xs().text_color(p.text_faint).child(stats))
+            .child(self.render_preview_bar(clip, stats, p, cx))
+    }
+
+    /// 预览区底部：统计信息 + 常用操作按钮
+    fn render_preview_bar(
+        &self,
+        clip: &Clip,
+        stats: String,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let p = *p;
+        let pos = self.selected;
+        let text_like = !matches!(clip.kind, Kind::Image | Kind::File);
+        let openable = matches!(clip.kind, Kind::Link | Kind::File | Kind::Image);
+        type Handler = fn(&mut Popup, usize, &mut Window, &mut Context<Popup>);
+        let button = |id: &'static str,
+                      icon: Lucide,
+                      tip: &'static str,
+                      f: Handler,
+                      cx: &mut Context<Self>| {
+            icon_button(id, icon, tip, p).on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    if !this.busy() {
+                        f(this, pos, window, cx);
+                    }
+                }),
+            )
+        };
+        h_flex()
+            .gap_1()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_xs()
+                    .text_color(p.text_faint)
+                    .child(stats),
+            )
+            .child(button(
+                "pv-copy",
+                Lucide::Copy,
+                tr("只复制，不粘贴", "Copy without pasting"),
+                |this, pos, _, cx| this.copy_only(pos, cx),
+                cx,
+            ))
+            .when(text_like, |d| {
+                d.child(button(
+                    "pv-edit",
+                    Lucide::SquarePen,
+                    tr(
+                        "编辑 · Ctrl+E（或双击内容）",
+                        "Edit · Ctrl+E (or double-click)",
+                    ),
+                    |this, pos, window, cx| this.start_edit(pos, window, cx),
+                    cx,
+                ))
+            })
+            .child(button(
+                "pv-note",
+                Lucide::StickyNote,
+                tr("备注 · F2", "Note · F2"),
+                |this, pos, window, cx| this.start_note(pos, window, cx),
+                cx,
+            ))
+            .child(button(
+                "pv-pin",
+                if clip.pinned {
+                    Lucide::StarOff
+                } else {
+                    Lucide::Star
+                },
+                if clip.pinned {
+                    tr("取消收藏 · Ctrl+P", "Unpin · Ctrl+P")
+                } else {
+                    tr("收藏 · Ctrl+P", "Pin · Ctrl+P")
+                },
+                |this, pos, _, cx| this.toggle_pin(pos, cx),
+                cx,
+            ))
+            .when(openable, |d| {
+                d.child(button(
+                    "pv-open",
+                    Lucide::ExternalLink,
+                    tr("打开 · Ctrl+O", "Open · Ctrl+O"),
+                    |this, pos, _, cx| this.open(pos, cx),
+                    cx,
+                ))
+            })
+            .child(
+                icon_button(
+                    "pv-more",
+                    Lucide::Ellipsis,
+                    tr(
+                        "更多动作 · Ctrl+K（或右键）",
+                        "More actions · Ctrl+K (or right-click)",
+                    ),
+                    p,
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.open_menu_for(pos, Some(event.position), window, cx);
+                    }),
+                ),
+            )
     }
 
     /// 备注输入框（浮在弹窗底部右侧，和动作菜单同一位置）
@@ -2351,7 +2584,34 @@ impl Popup {
             }))
     }
 
-    fn render_footer(&self, p: &Palette) -> impl IntoElement {
+    /// 可以点的快捷键提示
+    fn action_hint(
+        &self,
+        id: &'static str,
+        keys: &[&'static str],
+        label: &'static str,
+        p: &Palette,
+        cx: &mut Context<Self>,
+        f: fn(&mut Self, &mut Window, &mut Context<Self>),
+    ) -> Stateful<Div> {
+        let p = *p;
+        hint(keys, label, &p)
+            .id(id)
+            .px_1()
+            .py_0p5()
+            .rounded(px(5.))
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.hover).text_color(p.text))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    f(this, window, cx);
+                }),
+            )
+    }
+
+    fn render_footer(&self, p: &Palette, cx: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .h(px(38.))
             .flex_none()
@@ -2363,15 +2623,87 @@ impl Popup {
             .text_color(p.text_muted)
             .map(|d| {
                 if self.editing.is_some() {
-                    d.child(hint(&["Ctrl", "S"], tr("保存", "Save"), p))
-                        .child(hint(&["Ctrl", "↵"], tr("保存并粘贴", "Save & paste"), p))
-                        .child(hint(&["Esc"], tr("放弃修改", "Discard"), p))
+                    d.child(self.action_hint(
+                        "f-save",
+                        &["Ctrl", "S"],
+                        tr("保存", "Save"),
+                        p,
+                        cx,
+                        |this, w, cx| this.save_edit(false, w, cx),
+                    ))
+                    .child(self.action_hint(
+                        "f-save-paste",
+                        &["Ctrl", "↵"],
+                        tr("保存并粘贴", "Save & paste"),
+                        p,
+                        cx,
+                        |this, w, cx| this.save_edit(true, w, cx),
+                    ))
+                    .child(self.action_hint(
+                        "f-discard",
+                        &["Esc"],
+                        tr("放弃修改", "Discard"),
+                        p,
+                        cx,
+                        |this, w, cx| this.cancel_edit(w, cx),
+                    ))
                 } else {
-                    d.child(hint(&["↵"], tr("粘贴", "Paste"), p))
-                        .child(hint(&["Ctrl", "K"], tr("更多动作", "Actions"), p))
-                        .child(hint(&["Ctrl", "E"], tr("编辑", "Edit"), p))
-                        .child(hint(&["Ctrl", "Q"], tr("加入队列", "Queue"), p))
-                        .child(hint(&["Tab"], tr("分类", "Category"), p))
+                    d.child(self.action_hint(
+                        "f-paste",
+                        &["↵"],
+                        tr("粘贴", "Paste"),
+                        p,
+                        cx,
+                        |this, _, cx| {
+                            if !this.busy() {
+                                this.paste(this.selected, false, cx)
+                            }
+                        },
+                    ))
+                    .child(self.action_hint(
+                        "f-menu",
+                        &["Ctrl", "K"],
+                        tr("更多动作", "Actions"),
+                        p,
+                        cx,
+                        |this, w, cx| this.open_menu_for(this.selected, None, w, cx),
+                    ))
+                    .child(self.action_hint(
+                        "f-edit",
+                        &["Ctrl", "E"],
+                        tr("编辑", "Edit"),
+                        p,
+                        cx,
+                        |this, w, cx| {
+                            if !this.busy() {
+                                this.start_edit(this.selected, w, cx)
+                            }
+                        },
+                    ))
+                    .child(self.action_hint(
+                        "f-queue",
+                        &["Ctrl", "Q"],
+                        tr("加入队列", "Queue"),
+                        p,
+                        cx,
+                        |this, _, cx| {
+                            if !this.busy() {
+                                this.toggle_queue(this.selected, cx)
+                            }
+                        },
+                    ))
+                    .child(self.action_hint(
+                        "f-filter",
+                        &["Tab"],
+                        tr("分类", "Category"),
+                        p,
+                        cx,
+                        |this, _, cx| {
+                            if !this.busy() {
+                                this.select_filter(this.filter_ix + 1, cx)
+                            }
+                        },
+                    ))
                 }
             })
             .child(div().flex_1())
@@ -2405,9 +2737,14 @@ impl Popup {
                         .text_color(p.accent_text)
                         .child(status.clone()),
                 ),
-                (None, None) if self.editing.is_none() => {
-                    d.child(hint(&["Esc"], tr("关闭", "Close"), p))
-                }
+                (None, None) if self.editing.is_none() => d.child(self.action_hint(
+                    "f-close",
+                    &["Esc"],
+                    tr("关闭", "Close"),
+                    p,
+                    cx,
+                    |this, _, cx| this.hide(true, cx),
+                )),
                 (None, None) => d,
             })
     }
@@ -2427,7 +2764,7 @@ impl Render for Popup {
         } else {
             self.preview
                 .as_ref()
-                .map(|clip| self.render_preview(clip, &p).into_any_element())
+                .map(|clip| self.render_preview(clip, &p, cx).into_any_element())
         };
         let empty = self.items.is_empty();
         let note_panel = self
@@ -2515,7 +2852,7 @@ impl Render for Popup {
             )
             .child(div().h(px(1.)).bg(p.divider))
             .child(content)
-            .child(self.render_footer(&p))
+            .child(self.render_footer(&p, cx))
             .when_some(menu, |d, menu| {
                 d.child(
                     // 遮罩：挡住下面的列表和拖动区域，点一下关闭菜单

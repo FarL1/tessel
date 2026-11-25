@@ -6,8 +6,8 @@
 use std::time::Duration;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::base::{h_flex, v_flex};
-use gpui_kit::component::{ActiveTheme, Icon, Sizable};
+use gpui_kit::base::h_flex;
+use gpui_kit::component::{ActiveTheme, Icon};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use tessel_core::i18n::tr;
@@ -21,7 +21,7 @@ pub const WINDOW_W: f32 = 460.0;
 pub const WINDOW_H: f32 = 84.0;
 /// 完整显示的时长（不含淡入淡出）
 const HOLD: Duration = Duration::from_millis(1500);
-const ENTER: Duration = Duration::from_millis(200);
+const ENTER: Duration = Duration::from_millis(260);
 const LEAVE: Duration = Duration::from_millis(220);
 
 #[derive(Clone, Copy, PartialEq)]
@@ -181,96 +181,126 @@ impl Render for Toast {
         let Some(notice) = &self.notice else {
             return root.into_any_element();
         };
-        let (tint, tint_soft) = match notice.tone {
-            Tone::Success => (rgb(0x16A34A).into(), rgba(0x16A34A26).into()),
-            Tone::Info => (p.accent, p.accent_soft),
-            Tone::Warning => (rgb(0xD97706).into(), rgba(0xD9770626).into()),
+        let tint: Hsla = match notice.tone {
+            Tone::Success => rgb(0x22C55E).into(),
+            Tone::Info => p.accent,
+            Tone::Warning => rgb(0xF59E0B).into(),
         };
-        let badge: Hsla = tint;
+        // 深色主题下用接近黑的底，浅色下用白底，都带一点透明，像系统的浮层
+        let (bg, border, title_color, detail_color) = if p.dark {
+            (
+                hsla(240. / 360., 0.06, 0.12, 0.97),
+                hsla(0., 0., 1., 0.08),
+                hsla(0., 0., 0.98, 1.),
+                hsla(0., 0., 0.98, 0.62),
+            )
+        } else {
+            (
+                hsla(0., 0., 1., 0.98),
+                hsla(240. / 360., 0.1, 0.2, 0.08),
+                hsla(240. / 360., 0.1, 0.12, 1.),
+                hsla(240. / 360., 0.06, 0.25, 0.62),
+            )
+        };
+        let shadow = vec![
+            BoxShadow {
+                color: hsla(0., 0., 0., if p.dark { 0.35 } else { 0.08 }),
+                offset: point(px(0.), px(1.)),
+                blur_radius: px(2.),
+                spread_radius: px(0.),
+                inset: false,
+            },
+            BoxShadow {
+                color: hsla(0., 0., 0., if p.dark { 0.45 } else { 0.14 }),
+                offset: point(px(0.), px(8.)),
+                blur_radius: px(24.),
+                spread_radius: px(-6.),
+                inset: false,
+            },
+        ];
+        let dot = match notice.swatch {
+            Some(color) => div()
+                .size(px(24.))
+                .flex_none()
+                .rounded_full()
+                .bg(color)
+                .border_2()
+                .border_color(hsla(0., 0., 1., if p.dark { 0.25 } else { 0.9 })),
+            None => div()
+                .size(px(24.))
+                .flex_none()
+                .rounded_full()
+                .bg(tint)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    Icon::new(notice.icon)
+                        .size(px(14.))
+                        .text_color(hsla(0., 0., 1., 1.)),
+                ),
+        };
         let pill = h_flex()
             .relative()
             .max_w(px(WINDOW_W - 40.))
-            .h(px(48.))
+            .h(px(40.))
             .pl(px(8.))
-            .pr(px(18.))
-            .gap_2p5()
+            .pr(px(16.))
+            .gap(px(10.))
             .rounded_full()
-            .bg(p.popover)
+            .bg(bg)
             .border_1()
-            .border_color(p.border)
-            .shadow(vec![BoxShadow {
-                color: hsla(0., 0., 0., if p.dark { 0.45 } else { 0.16 }),
-                offset: point(px(0.), px(6.)),
-                blur_radius: px(18.),
-                spread_radius: px(-4.),
-                inset: false,
-            }])
-            .child(match notice.swatch {
-                Some(color) => div()
-                    .size(px(32.))
-                    .flex_none()
-                    .rounded_full()
-                    .bg(color)
-                    .border_1()
-                    .border_color(p.border),
-                None => div()
-                    .size(px(32.))
-                    .flex_none()
-                    .rounded_full()
-                    .bg(tint_soft)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(Icon::new(notice.icon).small().text_color(badge)),
-            })
+            .border_color(border)
+            .shadow(shadow)
+            .text_size(px(13.))
+            .child(dot)
             .child(
-                v_flex()
-                    .min_w_0()
+                div()
+                    .flex_none()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(title_color)
+                    .child(notice.title.clone()),
+            )
+            .when(!notice.detail.is_empty(), |d| {
+                d.child(div().flex_none().w(px(1.)).h(px(14.)).bg(border))
                     .child(
-                        h_flex()
-                            .gap_1p5()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(p.text)
-                                    .child(notice.title.clone()),
-                            )
-                            .when_some(notice.tag.clone(), |d, tag| {
-                                d.child(
-                                    div()
-                                        .px_1p5()
-                                        .rounded(px(4.))
-                                        .bg(p.hover)
-                                        .text_xs()
-                                        .text_color(p.text_muted)
-                                        .child(tag),
-                                )
-                            }),
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(detail_color)
+                            .child(notice.detail.clone()),
                     )
-                    .when(!notice.detail.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .text_xs()
-                                .text_color(p.text_muted)
-                                .truncate()
-                                .child(notice.detail.clone()),
-                        )
-                    }),
-            );
+            })
+            .when_some(notice.tag.clone(), |d, tag| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .px(px(7.))
+                        .py(px(1.))
+                        .rounded_full()
+                        .bg(if p.dark {
+                            hsla(0., 0., 1., 0.08)
+                        } else {
+                            hsla(240. / 360., 0.1, 0.2, 0.06)
+                        })
+                        .text_size(px(11.))
+                        .text_color(detail_color)
+                        .child(tag),
+                )
+            });
 
         let pill = if self.leaving {
             pill.with_animation(
                 ("toast-leave", self.generation),
                 Animation::new(LEAVE).with_easing(ease_in_out),
-                |el, t| el.opacity(1.0 - t).top(px(t * 6.)),
+                |el, t| el.opacity(1.0 - t).top(px(t * 4.)),
             )
             .into_any_element()
         } else {
             pill.with_animation(
                 ("toast-enter", self.generation),
                 Animation::new(ENTER).with_easing(ease_out_quint()),
-                |el, t| el.opacity(t).top(px((1.0 - t) * 12.)),
+                |el, t| el.opacity(t).top(px((1.0 - t) * 10.)),
             )
             .into_any_element()
         };

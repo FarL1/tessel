@@ -1047,6 +1047,7 @@ impl Render for SettingsView {
 
         v_flex()
             .size_full()
+            .relative()
             .bg(p.panel)
             .text_color(p.text)
             .child(
@@ -1112,17 +1113,26 @@ impl Render for SettingsView {
                             .child(about),
                     ),
             )
+            .with_animation(
+                "settings-in",
+                Animation::new(std::time::Duration::from_millis(220)).with_easing(ease_out_quint()),
+                |el, t| el.opacity(t).top(px((1.0 - t) * 8.)),
+            )
     }
 }
 
 /// 打开设置窗口，返回窗口句柄和视图
+/// `over`：在这个窗口（正在显示的弹窗）的位置打开，看起来是弹窗变成了设置窗口；
+/// 为空时放在鼠标所在屏幕的中间
 pub fn open(
     dir: PathBuf,
     tx: async_channel::Sender<AppCommand>,
     config: Config,
     autostart: bool,
+    over: Option<isize>,
     cx: &mut App,
 ) -> Option<(AnyWindowHandle, Entity<SettingsView>)> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     let bounds = Bounds::centered(None, size(px(720.), px(700.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -1132,10 +1142,23 @@ pub fn open(
         window_background: WindowBackgroundAppearance::MicaBackdrop,
         ..Default::default()
     };
-    gpui_kit::open_window(options, cx, |window, cx| {
+    let mut hwnd = None;
+    let opened = gpui_kit::open_window(options, cx, |window, cx| {
         window.set_window_title(tr("Tessel 设置", "Tessel Settings"));
+        // 先隐藏，摆好位置再显示（首帧之前，不会在屏幕中间闪一下）
+        if let Ok(RawWindowHandle::Win32(h)) = window.window_handle().map(|h| h.as_raw()) {
+            let raw = h.hwnd.get();
+            crate::win::hide(raw);
+            crate::win::place_over(raw, over);
+            hwnd = Some(raw);
+        }
         cx.new(|cx| SettingsView::new(dir, tx, config, autostart, window, cx))
     })
     .inspect_err(|err| log_line(format!("[error] 打开设置窗口失败：{err}")))
-    .ok()
+    .ok();
+    // 显示并切到前台：系统的窗口打开动画照常播放；弹窗失去焦点后自己收起
+    if let Some(raw) = hwnd {
+        crate::win::restore_and_focus(raw);
+    }
+    opened
 }

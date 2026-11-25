@@ -787,12 +787,14 @@ fn main() {
                                     .read()
                                     .map(|c| c.clone())
                                     .unwrap_or_default();
+                                let over = popup.read_with(cx, |p, _| p.visible_hwnd());
                                 let opened = cx.update(|cx| {
                                     settings::open(
                                         dir.clone(),
                                         cmd_tx.clone(),
                                         config,
                                         win::autostart_enabled(),
+                                        over,
                                         cx,
                                     )
                                 });
