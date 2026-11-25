@@ -26,13 +26,14 @@ pub struct Welcome {
 }
 
 impl Welcome {
-    fn finish(&mut self, window: &mut Window) {
+    /// `launch`：点"完成"时按勾选；点关闭按钮时一律不启动
+    fn finish(&mut self, launch: bool, window: &mut Window) {
         if self.finished {
             return;
         }
         self.finished = true;
         let _ = self.tx.try_send(AppCommand::FinishSetup {
-            launch: self.launch,
+            launch,
             autostart: self.autostart,
         });
         window.remove_window();
@@ -187,7 +188,7 @@ impl Render for Welcome {
                             .text_color(p.text_muted)
                             .hover(|s| s.bg(rgb(0xC42B1C)).text_color(rgb(0xFFFFFF)))
                             .child(Icon::new(IconName::Close).small())
-                            .on_click(cx.listener(|this, _, window, _| this.finish(window))),
+                            .on_click(cx.listener(|this, _, window, _| this.finish(false, window))),
                     ),
             )
             .child(
@@ -210,7 +211,9 @@ impl Render for Welcome {
                                 } else {
                                     tr("完成", "Finish")
                                 })
-                                .on_click(cx.listener(|this, _, window, _| this.finish(window))),
+                                .on_click(cx.listener(|this, _, window, _| {
+                                    this.finish(this.launch, window)
+                                })),
                         ),
                     ),
             )
@@ -256,7 +259,7 @@ pub fn open(tx: async_channel::Sender<AppCommand>, hotkey: String, cx: &mut App)
                 include_bytes!("../../../assets/brand/png/tessel-128.png").to_vec(),
             )),
         });
-        // 直接点右上角关闭：按当前的勾选处理（和"完成"一样）
+        // Alt+F4 / 任务栏关闭：和关闭按钮一样，不启动（开机自启按勾选保存）
         let weak = view.downgrade();
         window.on_window_should_close(cx, move |window, cx| {
             if let Some(view) = weak.upgrade() {
@@ -264,7 +267,7 @@ pub fn open(tx: async_channel::Sender<AppCommand>, hotkey: String, cx: &mut App)
                     if !this.finished {
                         this.finished = true;
                         let _ = close_tx.try_send(AppCommand::FinishSetup {
-                            launch: this.launch,
+                            launch: false,
                             autostart: this.autostart,
                         });
                     }

@@ -81,11 +81,11 @@ Where the name comes from: *tessellation*. Every copy is a tile, and together th
 
 ## Install
 
-Download `Tessel-Setup.exe` from the [latest release](https://github.com/FarL1/tessel/releases/latest) and run it. The installer shows where Tessel goes, and when it's done you choose whether to start it now and whether it starts with Windows.
+Download `Tessel-Setup.exe` from the [latest release](https://github.com/FarL1/tessel/releases/latest) and run it. You can pick the install folder, and when it's done you choose whether to start Tessel now and whether it starts with Windows.
 
 - Windows 10 / 11 (64-bit). Installs for the current user, **no administrator rights needed**
-- Installs to `%LOCALAPPDATA%\Tessel.App` and adds desktop and Start menu shortcuts
-- To uninstall, use Settings → Apps. This also turns off start-up with Windows; **your history is kept** in `%LOCALAPPDATA%\Tessel` and can be deleted by hand
+- Installs to `%LOCALAPPDATA%\Tessel.App` by default (or a folder you pick) and adds desktop and Start menu shortcuts
+- To uninstall, use Settings → Apps (or `Uninstall Tessel.exe` in the install folder). This also turns off start-up with Windows. **Your history is kept** in `%LOCALAPPDATA%\Tessel` unless you tick "Also delete my clipboard history and settings"
 
 > The installer isn't code-signed yet, so Windows may show "Windows protected your PC". Click "More info → Run anyway". Code signing is in progress.
 

@@ -82,6 +82,23 @@ pub fn extract(source: &Source) -> Result<PathBuf, String> {
     }
 }
 
+/// 把本程序（不带附加的安装包）写到 `dest`：装进安装目录后当卸载程序用，只有十几 MB
+pub fn write_program(dest: &Path) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let len = match locate() {
+        Ok(Source::Embedded { offset, .. }) => offset,
+        _ => std::fs::metadata(&exe).map_err(|e| e.to_string())?.len(),
+    };
+    let mut input = File::open(&exe).map_err(|e| e.to_string())?;
+    let mut out = File::create(dest).map_err(|e| e.to_string())?;
+    let copied = std::io::copy(&mut (&mut input).take(len), &mut out).map_err(|e| e.to_string())?;
+    if copied == len {
+        Ok(())
+    } else {
+        Err("写入卸载程序不完整".into())
+    }
+}
+
 /// 删除临时目录（只删我们自己解压出来的）
 pub fn cleanup(source: &Source, extracted: &Path) {
     if let Source::Embedded { .. } = source

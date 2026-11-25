@@ -47,10 +47,20 @@ pub fn window_title(raw: isize) -> String {
 ///
 /// GPUI 自己处理 WM_ACTIVATE 时不会把键盘焦点交给窗口（它的 activate() 会显式 SetFocus），
 /// 我们绕开了 activate()，所以必须自己调用 SetFocus，否则按键不会发到这个窗口。
+///
+/// 热键、托盘、双击快捷方式唤起时我们本来就有前台权限。没有权限时（比如被后台的安装程序启动），
+/// Windows 只让窗口在任务栏闪烁，窗口显示出来却收不到按键、按 Esc 也关不掉。
+/// 这时先发一个不对应任何功能的占位键：最后一次输入来自本进程，就有了切前台的权限。
 pub fn show_and_focus(raw: isize) -> bool {
     unsafe {
         let _ = ShowWindow(hwnd(raw), SW_SHOW);
-        let _ = SetForegroundWindow(hwnd(raw));
+        if !SetForegroundWindow(hwnd(raw)).as_bool() || foreground() != raw {
+            send_mask_key();
+            let _ = SetForegroundWindow(hwnd(raw));
+            if foreground() != raw {
+                crate::log_line("[show] ⚠ 没能切到前台".into());
+            }
+        }
         let _ = SetFocus(Some(hwnd(raw)));
         GetFocus().0 as isize == raw
     }
