@@ -906,9 +906,25 @@ fn main() {
                             }
                         }
                         AppCommand::BackToPopup => {
+                            // 设置窗口被拖动过的话，弹窗回到设置窗口现在的位置（看起来是同一个窗口）
+                            let settings_raw = live_settings.as_ref().and_then(|(handle, _)| {
+                                handle
+                                    .update(cx, |_, window, _| match window
+                                        .window_handle()
+                                        .map(|h| h.as_raw())
+                                    {
+                                        Ok(RawWindowHandle::Win32(h)) => Some(h.hwnd.get()),
+                                        _ => None,
+                                    })
+                                    .ok()
+                                    .flatten()
+                            });
                             // 先把弹窗显示出来（置顶），再关设置窗口，中间不会露出桌面
                             let _ = window_handle.update(cx, |_, window, cx| {
                                 popup.update(cx, |this, cx| {
+                                    if let Some(raw) = settings_raw {
+                                        this.take_position_of(raw);
+                                    }
                                     this.show_if_hidden(Instant::now(), window, cx)
                                 })
                             });

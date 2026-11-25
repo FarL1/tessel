@@ -458,6 +458,25 @@ impl Popup {
         self.user_pos = None;
     }
 
+    /// 从设置窗口返回：设置窗口是摆在弹窗正上方打开的，用户拖动过它的话，
+    /// 弹窗就挪到它现在的位置，当作用户拖动了弹窗（以后也记住这个位置）。没拖动过则不变。
+    pub fn take_position_of(&mut self, other: isize) {
+        let Some(target) = win::pos_centered_over(self.hwnd, other) else {
+            return;
+        };
+        // 居中换算有 1px 的取整误差，差几个像素不算拖动过
+        let moved = win::window_pos(self.hwnd)
+            .is_none_or(|(x, y)| (x - target.0).abs() > 4 || (y - target.1).abs() > 4);
+        if moved {
+            self.user_pos = Some(target);
+            // 弹窗可能还显示着（被设置窗口挡住），直接挪过去
+            if self.visible {
+                win::move_to(self.hwnd, target);
+                self.placed_at = Some(target);
+            }
+        }
+    }
+
     /// 托盘点击、再次启动：只负责显示，已经显示时保持不动
     /// 已经显示但没有被激活（唤起方没有前台权限时 SetForegroundWindow 会失败）也重新显示，
     /// 否则弹窗既拿不到键盘，也收不到"失去激活"事件，会一直挂在那里

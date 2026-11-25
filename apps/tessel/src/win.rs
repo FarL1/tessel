@@ -104,6 +104,20 @@ pub fn window_pos(raw: isize) -> Option<(i32, i32)> {
     Some((rect.left, rect.top))
 }
 
+/// 让窗口 `raw` 的中心和 `over` 的中心重合时，`raw` 左上角的位置
+pub fn pos_centered_over(raw: isize, over: isize) -> Option<(i32, i32)> {
+    let (mut own, mut other) = (RECT::default(), RECT::default());
+    unsafe {
+        GetWindowRect(hwnd(raw), &mut own).ok()?;
+        GetWindowRect(hwnd(over), &mut other).ok()?;
+    }
+    let (w, h) = (own.right - own.left, own.bottom - own.top);
+    Some((
+        (other.left + other.right) / 2 - w / 2,
+        (other.top + other.bottom) / 2 - h / 2,
+    ))
+}
+
 pub fn move_to(raw: isize, (x, y): (i32, i32)) {
     unsafe {
         let _ = SetWindowPos(
