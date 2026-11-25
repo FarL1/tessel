@@ -62,6 +62,8 @@ pub struct SettingsView {
     /// 正在录制哪个热键
     recording: Option<HotkeyTarget>,
     recorder_focus: [FocusHandle; 2],
+    /// 整个窗口的焦点：没有输入框获得焦点时，Esc 等按键也能收到
+    root_focus: FocusHandle,
     add_app: Entity<InputState>,
     /// 上次渲染时的界面语言：变了就更新窗口标题和输入框占位文字
     rendered_english: Option<bool>,
@@ -99,6 +101,8 @@ impl SettingsView {
             ))
         });
         let recorder_focus = [cx.focus_handle(), cx.focus_handle()];
+        let root_focus = cx.focus_handle();
+        root_focus.focus(window, cx);
         let subscriptions = vec![
             cx.subscribe_in(&add_app, window, |this, _, event, window, cx| {
                 if let InputEvent::PressEnter { .. } = event {
@@ -136,6 +140,7 @@ impl SettingsView {
             autostart,
             recording: None,
             recorder_focus,
+            root_focus,
             add_app,
             rendered_english: None,
             error: None,
@@ -1158,6 +1163,7 @@ impl Render for SettingsView {
             .relative()
             .bg(p.panel)
             .text_color(p.text)
+            .track_focus(&self.root_focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, _| {
                 if event.keystroke.key == "escape" && this.recording.is_none() {
                     this.back();
@@ -1167,17 +1173,25 @@ impl Render for SettingsView {
                 TitleBar::new().child(
                     h_flex()
                         .gap_2()
+                        // 标题栏按下后只要鼠标稍微一动就会开始拖动窗口，拖动会吞掉松开，按钮就收不到点击。
+                        // 组件库约定：接住按下的控件要"阻止默认行为"，标题栏才不拖动。
                         .child(
-                            Button::new("back")
-                                .ghost()
-                                .small()
-                                .icon(Icon::new(gpui_kit::assets::IconName::ArrowLeft))
-                                .label(tr("返回", "Back"))
-                                .tooltip(tr(
-                                    "回到剪贴板历史 · Esc",
-                                    "Back to clipboard history · Esc",
-                                ))
-                                .on_click(cx.listener(|this, _, _, _| this.back())),
+                            div()
+                                .on_mouse_down(MouseButton::Left, |_, window, _| {
+                                    window.prevent_default()
+                                })
+                                .child(
+                                    Button::new("back")
+                                        .ghost()
+                                        .small()
+                                        .icon(Icon::new(gpui_kit::assets::IconName::ArrowLeft))
+                                        .label(tr("返回", "Back"))
+                                        .tooltip(tr(
+                                            "回到剪贴板历史 · Esc",
+                                            "Back to clipboard history · Esc",
+                                        ))
+                                        .on_click(cx.listener(|this, _, _, _| this.back())),
+                                ),
                         )
                         .child(img(self.logo.clone()).size(px(16.)))
                         .child(div().text_sm().child(tr("Tessel 设置", "Tessel Settings"))),
