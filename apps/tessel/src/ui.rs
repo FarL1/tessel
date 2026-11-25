@@ -784,59 +784,41 @@ impl Popup {
     }
 
     /// 队列热键：粘贴队列里的下一条到当前窗口。
-    /// 热键触发时用户还按着修饰键（比如 Alt+Shift），等松开之后再发 Ctrl+V，
-    /// 否则目标程序收到的是 Ctrl+Alt+Shift+V。
-    pub fn paste_next(&mut self, cx: &mut Context<Self>) {
+    /// 按下热键就粘贴，不等用户松开修饰键（见 `win::send_paste_over_held_modifiers`）。
+    /// 连续按的话一条一条来，中间隔一小段时间，让目标程序先读完剪贴板。
+    pub fn paste_next(&mut self, pressed: Instant, cx: &mut Context<Self>) {
         if self.visible {
             self.hide(true, cx);
         }
-        self.queue_requests += 1;
         if self.queue_busy {
+            self.queue_requests += 1;
             return;
         }
+        debug_log(format!(
+            "[queue] 热键 → 主线程收到 {}ms",
+            pressed.elapsed().as_millis()
+        ));
+        self.paste_queue_head(cx);
         self.queue_busy = true;
         cx.spawn(async move |this, cx| {
             loop {
-                let t0 = Instant::now();
-                while win::modifiers_held() && t0.elapsed() < Duration::from_secs(3) {
-                    cx.background_executor()
-                        .timer(Duration::from_millis(15))
-                        .await;
-                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(300))
+                    .await;
                 let again = this
                     .update(cx, |this, cx| {
-                        if win::modifiers_held() {
-                            this.queue_requests = 0;
-                            this.show_toast(
-                                Notice::new(
-                                    Tone::Warning,
-                                    Lucide::ListOrdered,
-                                    tr("没有粘贴", "Not pasted"),
-                                )
-                                .detail(tr(
-                                    "松开热键之后才会粘贴，请再按一次",
-                                    "Release the hotkey to paste, then press it again",
-                                )),
-                                cx,
-                            );
-                        } else {
-                            this.queue_requests = this.queue_requests.saturating_sub(1);
-                            this.paste_queue_head(cx);
-                        }
-                        let again = this.queue_requests > 0;
-                        if !again {
+                        if this.queue_requests == 0 {
                             this.queue_busy = false;
+                            return false;
                         }
-                        again
+                        this.queue_requests -= 1;
+                        this.paste_queue_head(cx);
+                        true
                     })
                     .unwrap_or(false);
                 if !again {
                     break;
                 }
-                // 连续粘贴之间留一点时间，让目标程序先读完剪贴板
-                cx.background_executor()
-                    .timer(Duration::from_millis(300))
-                    .await;
             }
         })
         .detach();
@@ -849,16 +831,20 @@ impl Popup {
                 continue;
             };
             let expansion = self.snippet_expansion(&clip);
+            let t_write = Instant::now();
             let written = match &expansion {
                 Some(e) => self.write_text(&e.text),
                 None => self.write_to_clipboard(&clip, false),
             };
+            debug_log(format!(
+                "[queue] 写剪贴板 {}ms",
+                t_write.elapsed().as_millis()
+            ));
             let notice = match written {
                 Ok(()) => {
-                    win::send_ctrl_v();
-                    if let Some(e) = &expansion {
-                        win::send_left(e.cursor_back);
-                    }
+                    win::send_paste_over_held_modifiers(
+                        expansion.as_ref().map_or(0, |e| e.cursor_back),
+                    );
                     log_line(format!(
                         "[queue] 粘贴{} → 「{}」· 还剩 {} 条",
                         clip.kind.label(),

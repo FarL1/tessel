@@ -72,8 +72,8 @@ pub enum AppCommand {
     ClipboardChanged {
         notify: bool,
     },
-    /// 粘贴队列热键：粘贴队列里的下一条
-    PasteNext,
+    /// 粘贴队列热键：粘贴队列里的下一条（带上按下热键的时刻，用来记录延迟）
+    PasteNext(Instant),
     /// 配置文件被修改
     ConfigChanged,
     ResetPosition,
@@ -650,7 +650,7 @@ fn main() {
         let paste_tx = tx.clone();
         std::thread::spawn(move || {
             while paste_next.wait() {
-                let _ = paste_tx.try_send(AppCommand::PasteNext);
+                let _ = paste_tx.try_send(AppCommand::PasteNext(Instant::now()));
             }
         });
         let show_tx = tx.clone();
@@ -700,7 +700,7 @@ fn main() {
                 } else if event.id == queue_id.load(Ordering::Relaxed) {
                     // 尽快发一个占位键：用户松开 Alt / Shift 时不会激活菜单栏、切换输入法中英文
                     win::send_mask_key();
-                    let _ = hotkey_tx.try_send(AppCommand::PasteNext);
+                    let _ = hotkey_tx.try_send(AppCommand::PasteNext(Instant::now()));
                 }
             }));
 
@@ -1083,7 +1083,7 @@ fn main() {
                                     AppCommand::ClipboardChanged { notify } => {
                                         this.on_clipboard_changed(notify, cx)
                                     }
-                                    AppCommand::PasteNext => this.paste_next(cx),
+                                    AppCommand::PasteNext(t0) => this.paste_next(t0, cx),
                                     AppCommand::ResetPosition => this.reset_position(),
                                     _ => {}
                                 });

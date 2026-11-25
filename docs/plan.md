@@ -294,7 +294,7 @@ UI 技术待定：Android 用 Jetpack Compose，iOS 用 SwiftUI，这是最自�
 - [x] 动作菜单（`Ctrl+K`）：粘贴 / 只复制 / 打开 / 收藏 / 删除，以及内置转换（JSON、链接追踪参数、URL 解码、颜色格式、空白、合并行、大小写），转换逻辑在 `tessel-core::transform`，可单测
 - [x] 快速编号粘贴（M1 已有 `Ctrl+1–9`）
 - [x] 前缀过滤语法：`app:` / `type:` / `is:pinned|rich` / `-词`（`tessel-core::query`）
-- [x] 粘贴队列（方案 B）：弹窗里 `Ctrl+Q` 排队，全局热键（默认 `Alt+Shift+V`）每按一次粘贴下一条；等修饰键松开后再发 Ctrl+V，并先发一个占位键避免 Alt 激活菜单栏 / Shift 切换输入法
+- [x] 粘贴队列（方案 B）：弹窗里 `Ctrl+Q` 排队，全局热键（默认 `Alt+Shift+V`）每按一次粘贴下一条；按下就粘贴：同一批输入里临时松开按着的修饰键 → Ctrl+V → 按回去 → 占位键（避免之后松开 Alt 激活菜单栏 / Shift 切换输入法）
 - [x] 编辑记录（`Ctrl+E`）：预览区变成编辑框，原地更新（`Store::update_text`，同步全文索引，丢弃对不上的富格式，撞重复时合并）
 - [x] 复制提示：独立的透明浮层窗口（不激活、不进任务栏），屏幕底部显示 1.5 秒；`copy_toast` 可关闭
 - [x] 片段和模板：`snippet` 标记（数据库 v4），`Ctrl+N` 新建；变量 `{date}` `{time}` `{datetime}` `{weekday}` `{clipboard}` `{cursor}`（`tessel-core::template`，中英文变量名都认，不认识的花括号原样保留）；`{cursor}` 用粘贴后发送 ← 实现；只对片段展开

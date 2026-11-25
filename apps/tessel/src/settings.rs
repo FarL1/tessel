@@ -1173,12 +1173,15 @@ impl Render for SettingsView {
                 TitleBar::new().child(
                     h_flex()
                         .gap_2()
-                        // 标题栏按下后只要鼠标稍微一动就会开始拖动窗口，拖动会吞掉松开，按钮就收不到点击。
-                        // 组件库约定：接住按下的控件要"阻止默认行为"，标题栏才不拖动。
+                        // 标题栏整条都登记成了"拖动区"（Windows 命中测试返回 HTCAPTION），真实鼠标按下走的是
+                        // 非客户区消息：没人停止传递的话，GPUI 会把它交给系统，系统进入移动窗口的循环，
+                        // 吞掉松开，按钮就收不到点击。所以这里既要阻止默认行为（标题栏自己不拖动），
+                        // 也要停止传递（GPUI 不再交给系统）。
                         .child(
                             div()
-                                .on_mouse_down(MouseButton::Left, |_, window, _| {
-                                    window.prevent_default()
+                                .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                                    window.prevent_default();
+                                    cx.stop_propagation();
                                 })
                                 .child(
                                     Button::new("back")

@@ -18,8 +18,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
-    KEYEVENTF_KEYUP, SendInput, SetFocus, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN,
-    VK_SHIFT, VK_V,
+    KEYEVENTF_KEYUP, SendInput, SetFocus, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_RWIN, VK_V,
 };
 use windows::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -254,11 +253,72 @@ pub fn local_time() -> tessel_core::template::LocalTime {
     }
 }
 
-/// 热键触发时按住的修饰键还没松开（这时发 Ctrl+V 会变成 Ctrl+Alt+Shift+V 之类）
-pub fn modifiers_held() -> bool {
-    [VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN]
+/// 队列热键的粘贴：用户可能还按着热键的修饰键（Alt、Shift…），直接发 Ctrl+V 目标程序收到的是
+/// Ctrl+Alt+Shift+V。所以在同一批输入里：先松开还按着的修饰键 → Ctrl+V（片段再按 ← 把光标移回
+/// `{cursor}`）→ 把修饰键按回去 → 一个占位键。
+///
+/// - 不用等用户松手，按下热键就粘贴；
+/// - 修饰键按回去之后，用户按住不放再按一次热键，还能接着粘贴下一条；
+/// - 占位键让用户之后松开修饰键时，系统不会当成"单独按了 Alt"（激活菜单栏）、"单独按了 Win"
+///   （打开开始菜单）、"单独按了 Shift"（输入法切换中英文）或 Alt+Shift（切换键盘布局）。
+///
+/// SendInput 一批输入不会和用户的真实按键交错。
+pub fn send_paste_over_held_modifiers(cursor_back: usize) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        KEYEVENTF_EXTENDEDKEY, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_RCONTROL, VK_RMENU,
+        VK_RSHIFT,
+    };
+    // 右 Ctrl / 右 Alt / Win 是扩展键，按回去时要带上扩展标志，否则系统当成左边那个
+    let mods = [
+        (VK_LCONTROL, false),
+        (VK_RCONTROL, true),
+        (VK_LMENU, false),
+        (VK_RMENU, true),
+        (VK_LSHIFT, false),
+        (VK_RSHIFT, false),
+        (VK_LWIN, true),
+        (VK_RWIN, true),
+    ];
+    let held: Vec<(VIRTUAL_KEY, bool)> = mods
+        .into_iter()
+        .filter(|(vk, _)| unsafe { GetAsyncKeyState(vk.0 as i32) } as u16 & 0x8000 != 0)
+        .collect();
+    let with_ext = |vk: VIRTUAL_KEY, ext: bool, up: bool| {
+        let mut input = key(vk, up);
+        if ext {
+            unsafe { input.Anonymous.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY };
+        }
+        input
+    };
+    let mut inputs: Vec<INPUT> = held
         .iter()
-        .any(|vk| unsafe { GetAsyncKeyState(vk.0 as i32) } as u16 & 0x8000 != 0)
+        .map(|&(vk, ext)| with_ext(vk, ext, true))
+        .collect();
+    inputs.extend([
+        key(VK_CONTROL, false),
+        key(VK_V, false),
+        key(VK_V, true),
+        key(VK_CONTROL, true),
+    ]);
+    for _ in 0..cursor_back.min(2000) {
+        inputs.extend([key(VK_LEFT, false), key(VK_LEFT, true)]);
+    }
+    inputs.extend(held.iter().map(|&(vk, ext)| with_ext(vk, ext, false)));
+    if !held.is_empty() {
+        let mask = VIRTUAL_KEY(0xE8);
+        inputs.extend([key(mask, false), key(mask, true)]);
+    }
+    if cfg!(debug_assertions) && std::env::var_os("TESSEL_TEST_NO_INPUT").is_some() {
+        crate::log_line(format!(
+            "[test] 跳过发送粘贴按键（按着的修饰键 {}，共 {} 个输入）",
+            held.len(),
+            inputs.len()
+        ));
+        return;
+    }
+    unsafe {
+        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+    }
 }
 
 /// 发送一个没有含义的按键（0xE8 未分配）。在按住 Alt / Win / Shift 的热键之后发一下，
@@ -273,6 +333,11 @@ pub fn send_mask_key() {
 }
 
 pub fn send_ctrl_v() {
+    // 测试用（只在 debug 构建里有效）：不真的发按键，免得粘贴进正在用的窗口
+    if cfg!(debug_assertions) && std::env::var_os("TESSEL_TEST_NO_INPUT").is_some() {
+        crate::log_line("[test] 跳过发送 Ctrl+V".into());
+        return;
+    }
     let inputs = [
         key(VK_CONTROL, false),
         key(VK_V, false),
