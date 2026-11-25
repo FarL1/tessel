@@ -2062,7 +2062,7 @@ impl Popup {
                     .gap_2()
                     .child(
                         div()
-                            .h(px(260.))
+                            .h(px(228.))
                             .rounded(design::RADIUS_LG)
                             .border_1()
                             .border_color(p.border)
@@ -2078,7 +2078,7 @@ impl Popup {
                                 // 所以只限制最大宽高，让图片按比例缩进框里。
                                 img(info.path.clone())
                                     .max_w_full()
-                                    .max_h(px(244.))
+                                    .max_h(px(212.))
                                     .object_fit(ObjectFit::Contain),
                             ),
                     )
