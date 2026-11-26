@@ -108,6 +108,7 @@ Tessel lives in the system tray. Press **`Alt+V`** in any app to open it.
 | `Ctrl+O` | Open: links in the browser, files in File Explorer, images in the default viewer |
 | `Ctrl+E` | Edit the text: `Ctrl+S` saves, `Ctrl+Enter` saves and pastes, `Esc` discards |
 | `Ctrl+Q` | Add to / remove from the paste queue (see below) |
+| `Ctrl+T` | Pin the popup on top (or click the pin): it stays open when you click elsewhere or paste, and pastes go to the window you used last |
 | `Ctrl+N` | New snippet (see below) |
 | `F2` | Add a note: give the item a name or group it with `#tags` (notes show in the list and are searchable) |
 | `Ctrl+K` | Action menu: copy without pasting, format JSON, strip tracking parameters, convert colors, join lines… (only what applies to the item) |

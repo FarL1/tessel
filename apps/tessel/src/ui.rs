@@ -36,6 +36,7 @@ actions!(
         PasteSelected,
         PastePlainText,
         TogglePin,
+        ToggleKeepOnTop,
         DeleteClip,
         OpenClip,
         OpenSettings,
@@ -53,6 +54,8 @@ actions!(
 );
 
 const CONTEXT: &str = "ClipPopup";
+/// 搜索框外面包的一层，键位上下文是 `ClipPopup > ClipSearch > Input`
+const SEARCH_CONTEXT: &str = "ClipSearch";
 
 fn search_placeholder() -> &'static str {
     tr(
@@ -90,11 +93,13 @@ const ROW_TRAIL_PAD: Pixels = px(10.);
 
 /// 弹窗的键位表。正式版本里会从用户配置文件加载，允许自定义。
 ///
-/// 谓词写成 `ClipPopup > Input`：焦点在搜索框里时，搜索框自身也绑定了 up/down/enter/tab，
+/// 谓词写成 `ClipSearch > Input`：焦点在搜索框里时，搜索框自身也绑定了 up/down/enter/tab，
 /// 同一深度的绑定以后注册的为准，所以这些绑定必须在 `gpui_kit::init` 之后注册。
+/// 不能写成 `ClipPopup > Input`：`>` 匹配所有后代，编辑记录的多行编辑框也是 `Input`，
+/// 那样 ↑↓ 会去移动左边的列表、Enter 不换行。备注框是单行的，沿用列表的键位。
 pub fn bind_keys(cx: &mut App) {
     let mut bindings = Vec::new();
-    for ctx in ["ClipPopup > Input", CONTEXT] {
+    for ctx in ["ClipSearch > Input", "NoteEditor > Input", CONTEXT] {
         let c = Some(ctx);
         bindings.extend([
             KeyBinding::new("up", SelectPrev, c),
@@ -113,6 +118,7 @@ pub fn bind_keys(cx: &mut App) {
             KeyBinding::new("ctrl-e", StartEdit, c),
             KeyBinding::new("f2", EditNote, c),
             KeyBinding::new("ctrl-n", NewSnippet, c),
+            KeyBinding::new("ctrl-t", ToggleKeepOnTop, c),
         ]);
     }
     // 编辑框里：Enter 是换行，Esc 只退出编辑（不关闭弹窗）
@@ -141,6 +147,8 @@ pub struct Popup {
     visible: bool,
     /// 弹出前的前台窗口，粘贴时切回它
     prev_foreground: Option<isize>,
+    /// 钉在前台：点击别处、粘贴之后都不收起（窗口本来就是置顶的）。只在这次运行里有效
+    keep_on_top: bool,
     store: Store,
     paused: Arc<AtomicBool>,
     /// 暂停状态在界面里切换时通知托盘
@@ -232,8 +240,10 @@ impl Popup {
                     this.visible
                 ));
                 if this.visible && !active {
-                    // 点击外部时自动隐藏
-                    this.hide(false, cx);
+                    // 点击外部时自动隐藏（钉在前台时不隐藏）
+                    if !this.keep_on_top {
+                        this.hide(false, cx);
+                    }
                 } else if this.visible && active {
                     // GPUI 处理激活时会重置内部焦点，激活事件可能晚于 show() 到达，这里重新聚焦
                     if this.editing.is_some() {
@@ -260,11 +270,13 @@ impl Popup {
             }),
         ];
 
+        win::track_foreground();
         let mut this = Self {
             hwnd,
             tx,
             visible: false,
             prev_foreground: None,
+            keep_on_top: false,
             store,
             paused,
             on_pause_changed,
@@ -490,13 +502,19 @@ impl Popup {
     /// 已经显示但没有被激活（唤起方没有前台权限时 SetForegroundWindow 会失败）也重新显示，
     /// 否则弹窗既拿不到键盘，也收不到"失去激活"事件，会一直挂在那里
     pub fn show_if_hidden(&mut self, t0: Instant, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.visible || !window.is_window_active() {
+        if self.visible && self.keep_on_top {
+            // 钉住时一直显示着，只是切回来，不清空正在看的内容
+            win::show_and_focus(self.hwnd);
+        } else if !self.visible || !window.is_window_active() {
             self.show(t0, window, cx);
         }
     }
 
     pub fn toggle(&mut self, t0: Instant, window: &mut Window, cx: &mut Context<Self>) {
-        if self.visible {
+        if self.visible && self.keep_on_top && !window.is_window_active() {
+            // 钉住的弹窗在别的窗口后面等着：热键把它切回前台，而不是收起
+            win::show_and_focus(self.hwnd);
+        } else if self.visible {
             self.hide(true, cx);
         } else {
             self.show(t0, window, cx);
@@ -696,6 +714,10 @@ impl Popup {
             None => self.write_to_clipboard(&clip, false),
         };
         match written {
+            Ok(()) if self.keep_on_top => {
+                self.status = Some(tr("已复制到剪贴板", "Copied to clipboard").into());
+                cx.notify();
+            }
             Ok(()) => self.hide(true, cx),
             Err(err) => {
                 self.status = Some(
@@ -731,18 +753,28 @@ impl Popup {
             return;
         }
         // 设置为"只复制"时：关闭弹窗、把焦点还回去，由用户自己粘贴
-        if !self.config.auto_paste {
+        if !self.config.auto_paste && !self.keep_on_top {
             self.hide(true, cx);
             return;
         }
-        let Some(target) = self.prev_foreground.take() else {
+        // 钉住时粘到用户最近在用的窗口，弹窗留在原处
+        let target = if !self.config.auto_paste {
+            None
+        } else if self.keep_on_top {
+            win::last_other_foreground().or(self.prev_foreground)
+        } else {
+            self.prev_foreground.take()
+        };
+        let Some(target) = target else {
             self.status = Some(tr("已复制到剪贴板", "Copied to clipboard").into());
             cx.notify();
             return;
         };
-        self.remember_position();
-        self.visible = false;
-        win::hide(self.hwnd);
+        if !self.keep_on_top {
+            self.remember_position();
+            self.visible = false;
+            win::hide(self.hwnd);
+        }
         let report = win::restore_and_paste(target);
         if report.focused && cursor_back > 0 {
             win::send_left(cursor_back);
@@ -816,8 +848,13 @@ impl Popup {
     /// 按下热键就粘贴，不等用户松开修饰键（见 `win::send_paste_over_held_modifiers`）。
     /// 连续按的话一条一条来，中间隔一小段时间，让目标程序先读完剪贴板。
     pub fn paste_next(&mut self, pressed: Instant, cx: &mut Context<Self>) {
-        if self.visible {
+        if self.visible && !self.keep_on_top {
             self.hide(true, cx);
+        } else if self.visible && win::foreground() == self.hwnd {
+            // 钉住的弹窗正在前台：粘到用户最近在用的窗口
+            if let Some(target) = win::last_other_foreground().or(self.prev_foreground) {
+                win::focus(target);
+            }
         }
         if self.queue_busy {
             self.queue_requests += 1;
@@ -1336,6 +1373,37 @@ impl Popup {
         let _ = self.tx.try_send(AppCommand::OpenSettingsWindow);
     }
 
+    /// 设置窗口已经盖在弹窗上面显示出来了：弹窗收起（钉住时不会因为失去焦点自动收起）。
+    /// 等设置窗口显示之后再收，中间不会露出桌面。
+    pub fn yield_to_settings(&mut self, cx: &mut Context<Self>) {
+        self.hide(false, cx);
+    }
+
+    fn on_toggle_keep_on_top(
+        &mut self,
+        _: &ToggleKeepOnTop,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_keep_on_top(cx);
+    }
+
+    fn toggle_keep_on_top(&mut self, cx: &mut Context<Self>) {
+        self.keep_on_top = !self.keep_on_top;
+        self.status = Some(
+            if self.keep_on_top {
+                tr(
+                    "已钉在前台：点击别处、粘贴之后都不会收起",
+                    "Pinned on top: stays open when you click elsewhere or paste",
+                )
+            } else {
+                tr("已取消钉在前台", "No longer pinned on top")
+            }
+            .into(),
+        );
+        cx.notify();
+    }
+
     fn on_open_menu(&mut self, _: &OpenActionMenu, window: &mut Window, cx: &mut Context<Self>) {
         self.open_menu_for(self.selected, None, window, cx);
     }
@@ -1712,6 +1780,7 @@ impl Popup {
                     .child(
                         div()
                             .flex_1()
+                            .key_context(SEARCH_CONTEXT)
                             .child(Input::new(&self.search).appearance(false)),
                     )
                     .child(
@@ -1751,6 +1820,39 @@ impl Popup {
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| this.toggle_pause(cx)),
                     ),
+            )
+            // 钉在前台：按下后点击别处、粘贴之后都不收起
+            .child(
+                div()
+                    .id("keep-on-top")
+                    .occlude()
+                    .flex_none()
+                    .size(px(30.))
+                    .rounded(design::RADIUS_MD)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .map(|d| {
+                        if self.keep_on_top {
+                            d.bg(p.hover).text_color(p.accent)
+                        } else {
+                            d.text_color(p.text_muted)
+                                .hover(move |s| s.bg(p.hover).text_color(p.text))
+                        }
+                    })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| this.toggle_keep_on_top(cx)),
+                    )
+                    .tooltip(move |window, cx| {
+                        Tooltip::new(tr(
+                            "钉在前台（Ctrl+T）：点击别处、粘贴之后都不收起",
+                            "Pin on top (Ctrl+T): stays open when you click elsewhere or paste",
+                        ))
+                        .build(window, cx)
+                    })
+                    .child(Icon::new(Lucide::Pin).small()),
             )
             .child(
                 div()
@@ -2955,6 +3057,7 @@ impl Render for Popup {
             .on_action(cx.listener(Self::on_paste))
             .on_action(cx.listener(Self::on_paste_plain))
             .on_action(cx.listener(Self::on_toggle_pin))
+            .on_action(cx.listener(Self::on_toggle_keep_on_top))
             .on_action(cx.listener(Self::on_delete))
             .on_action(cx.listener(Self::on_open))
             .on_action(cx.listener(Self::on_open_settings))

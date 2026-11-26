@@ -69,6 +69,7 @@ gpui_kit::assets::icon_assets!(
         StickyNote,
         Scissors,
         SquarePlus,
+        Pin,
     ]
 );
 

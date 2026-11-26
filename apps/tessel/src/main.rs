@@ -919,6 +919,9 @@ fn main() {
                                         view.update(cx, |v, cx| v.set_update_result(&result, false, cx));
                                     }
                                 }
+                                if opened.is_some() && over.is_some() {
+                                    popup.update(cx, |p, cx| p.yield_to_settings(cx));
+                                }
                                 settings_opened_at = opened
                                     .as_ref()
                                     .and_then(|(h, _)| window_hwnd(*h, cx))

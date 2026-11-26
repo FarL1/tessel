@@ -2,6 +2,7 @@
 //!
 //! GPUI 在 Windows 上的 `App::hide()` 是空实现，所以窗口的显示/隐藏直接用原生 HWND 操作。
 
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
@@ -34,6 +35,76 @@ fn hwnd(raw: isize) -> HWND {
 
 pub fn foreground() -> isize {
     unsafe { GetForegroundWindow().0 as isize }
+}
+
+/// 其他程序最近一次切到前台的窗口（不算本程序的窗口）
+static LAST_OTHER_FOREGROUND: AtomicIsize = AtomicIsize::new(0);
+
+/// 开始记录其他程序的前台窗口。弹窗钉在前台时，点弹窗粘贴要粘到用户刚才在用的那个窗口，
+/// 而那时前台已经是弹窗自己了，所以要提前记下来。
+/// 回调经由调用线程的消息循环送达，必须在主线程（GPUI 的消息循环所在线程）调用，只调用一次。
+pub fn track_foreground() {
+    use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    };
+
+    unsafe extern "system" fn on_foreground(
+        _: HWINEVENTHOOK,
+        _: u32,
+        window: HWND,
+        _: i32,
+        _: i32,
+        _: u32,
+        _: u32,
+    ) {
+        if !window.is_invalid() && !is_shell_window(window) {
+            LAST_OTHER_FOREGROUND.store(window.0 as isize, Ordering::Relaxed);
+        }
+    }
+
+    /// 任务栏、桌面、开始菜单、Alt+Tab 这类系统界面不是粘贴目标。
+    /// 用户点任务栏切换程序时，前台会先短暂变成任务栏，跳过它就还是之前的程序。
+    fn is_shell_window(window: HWND) -> bool {
+        use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, IsWindowVisible};
+        const SHELL: [&str; 9] = [
+            "Shell_TrayWnd",
+            "Shell_SecondaryTrayWnd",
+            "Progman",
+            "WorkerW",
+            "NotifyIconOverflowWindow",
+            "TopLevelWindowForOverflowXamlIsland",
+            "Windows.UI.Core.CoreWindow",
+            "XamlExplorerHostIslandWindow",
+            "ForegroundStaging",
+        ];
+        let mut buf = [0u16; 64];
+        let n = unsafe { GetClassNameW(window, &mut buf) };
+        let class = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+        !unsafe { IsWindowVisible(window) }.as_bool() || SHELL.contains(&class.as_str())
+    }
+
+    // 钩子一直用到程序退出，不需要保存句柄
+    let hook = unsafe {
+        SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            None,
+            Some(on_foreground),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+        )
+    };
+    if hook.is_invalid() {
+        crate::log_line("[foreground] ⚠ 无法监听前台窗口切换，钉住时粘贴会用弹出前的窗口".into());
+    }
+}
+
+/// 其他程序最近一次的前台窗口（窗口已经关掉的话为空）
+pub fn last_other_foreground() -> Option<isize> {
+    let raw = LAST_OTHER_FOREGROUND.load(Ordering::Relaxed);
+    (raw != 0 && unsafe { IsWindow(Some(hwnd(raw))) }.as_bool()).then_some(raw)
 }
 
 pub fn window_title(raw: isize) -> String {
