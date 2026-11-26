@@ -3,8 +3,8 @@
 1 ICON "../../assets/brand/tessel.ico"
 
 1 VERSIONINFO
-FILEVERSION 0,2,1,0
-PRODUCTVERSION 0,2,1,0
+FILEVERSION 0,2,2,0
+PRODUCTVERSION 0,2,2,0
 FILEOS 0x40004
 FILETYPE 0x1
 BEGIN
@@ -15,8 +15,8 @@ BEGIN
             VALUE "CompanyName", "Tessel contributors"
             VALUE "FileDescription", "Tessel 拼贴 安装程序"
             VALUE "ProductName", "Tessel 拼贴"
-            VALUE "FileVersion", "0.2.1"
-            VALUE "ProductVersion", "0.2.1"
+            VALUE "FileVersion", "0.2.2"
+            VALUE "ProductVersion", "0.2.2"
             VALUE "OriginalFilename", "Tessel-Setup.exe"
             VALUE "LegalCopyright", "MIT OR Apache-2.0"
         END

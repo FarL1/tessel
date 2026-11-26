@@ -4,6 +4,8 @@
 
 ## [未发布]
 
+## [0.2.2] - 2026-11-26
+
 ### 新增
 
 - 剪贴板历史窗口可以拖动边缘改变大小（最小 640×440），大小会记住，下次启动沿用；设置窗口改过大小后点"返回"，历史窗口也变成同样大小。托盘菜单的"重置窗口位置"改为"重置窗口位置和大小"
@@ -171,7 +173,8 @@ M1（Windows 本地版）完成，第一个可日常使用的版本。
 - 设置窗口与 `config.toml`（热加载、保留注释）
 - 安装包（Velopack，按用户安装，卸载保留数据）
 
-[未发布]: https://github.com/FarL1/tessel/compare/v0.2.1...HEAD
+[未发布]: https://github.com/FarL1/tessel/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/FarL1/tessel/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/FarL1/tessel/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/FarL1/tessel/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/FarL1/tessel/compare/v0.1.3...v0.1.4
