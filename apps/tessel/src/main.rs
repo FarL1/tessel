@@ -523,6 +523,19 @@ fn update_tray_hotkey(
     }
 }
 
+/// GPUI 窗口对应的 Win32 窗口句柄
+fn window_hwnd(handle: AnyWindowHandle, cx: &mut AsyncApp) -> Option<isize> {
+    handle
+        .update(cx, |_, window, _| {
+            match window.window_handle().map(|h| h.as_raw()) {
+                Ok(RawWindowHandle::Win32(h)) => Some(h.hwnd.get()),
+                _ => None,
+            }
+        })
+        .ok()
+        .flatten()
+}
+
 fn main() {
     // Velopack 安装 / 更新 / 卸载时会带特殊参数启动本程序执行钩子，必须放在最前面
     // （这种情况下它会直接退出进程，不会走到后面的逻辑）。直接运行 exe 时这里什么都不做。
@@ -812,6 +825,8 @@ fn main() {
                 let tray = tray;
                 // 设置窗口：关闭后视图被释放，WeakEntity 升级失败即表示已关闭
                 let mut settings_win: Option<SettingsWindow> = None;
+                // 设置窗口刚打开时的位置：返回时用来判断用户有没有拖动过它
+                let mut settings_opened_at: Option<(i32, i32)> = None;
                 while let Ok(cmd) = rx.recv().await {
                     let live_settings = settings_win
                         .as_ref()
@@ -886,6 +901,7 @@ fn main() {
                                     .map(|c| c.clone())
                                     .unwrap_or_default();
                                 let over = popup.read_with(cx, |p, _| p.visible_hwnd());
+                                let popup_hwnd = popup.read_with(cx, |p, _| p.hwnd());
                                 let opened = cx.update(|cx| {
                                     settings::open(
                                         dir.clone(),
@@ -893,6 +909,7 @@ fn main() {
                                         config,
                                         win::autostart_enabled(),
                                         over,
+                                        popup_hwnd,
                                         cx,
                                     )
                                 });
@@ -902,28 +919,31 @@ fn main() {
                                         view.update(cx, |v, cx| v.set_update_result(&result, false, cx));
                                     }
                                 }
+                                settings_opened_at = opened
+                                    .as_ref()
+                                    .and_then(|(h, _)| window_hwnd(*h, cx))
+                                    .and_then(win::window_pos);
                                 settings_win = opened.map(|(h, e)| (h, e.downgrade()));
                             }
                         }
                         AppCommand::BackToPopup => {
-                            // 设置窗口被拖动过的话，弹窗回到设置窗口现在的位置（看起来是同一个窗口）
-                            let settings_raw = live_settings.as_ref().and_then(|(handle, _)| {
-                                handle
-                                    .update(cx, |_, window, _| match window
-                                        .window_handle()
-                                        .map(|h| h.as_raw())
-                                    {
-                                        Ok(RawWindowHandle::Win32(h)) => Some(h.hwnd.get()),
-                                        _ => None,
+                            // 弹窗出现在设置窗口现在的位置（看起来是同一个窗口在翻页）；
+                            // 用户拖动过设置窗口的话，弹窗以后也记住这个位置
+                            let settings_raw = live_settings
+                                .as_ref()
+                                .and_then(|(handle, _)| window_hwnd(*handle, cx));
+                            let dragged = settings_raw.is_some_and(|raw| {
+                                win::window_pos(raw).is_some_and(|now| {
+                                    settings_opened_at.is_none_or(|at| {
+                                        (now.0 - at.0).abs() > 4 || (now.1 - at.1).abs() > 4
                                     })
-                                    .ok()
-                                    .flatten()
+                                })
                             });
                             // 先把弹窗显示出来（置顶），再关设置窗口，中间不会露出桌面
                             let _ = window_handle.update(cx, |_, window, cx| {
                                 popup.update(cx, |this, cx| {
                                     if let Some(raw) = settings_raw {
-                                        this.take_position_of(raw);
+                                        this.take_position_of(raw, dragged);
                                     }
                                     this.show_if_hidden(Instant::now(), window, cx)
                                 })

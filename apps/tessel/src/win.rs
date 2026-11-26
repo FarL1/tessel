@@ -72,6 +72,38 @@ pub fn focus(raw: isize) {
     }
 }
 
+/// 把窗口 `raw` 设成和 `like` 一样大（不移动、不改变层级）
+pub fn copy_size(raw: isize, like: isize) {
+    use windows::Win32::UI::WindowsAndMessaging::{SWP_NOMOVE, SWP_NOZORDER};
+    let mut rect = RECT::default();
+    unsafe {
+        if GetWindowRect(hwnd(like), &mut rect).is_err() {
+            return;
+        }
+        let _ = SetWindowPos(
+            hwnd(raw),
+            None,
+            0,
+            0,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+}
+
+/// 不在任务栏上显示按钮（和弹窗一样）。要在窗口显示之前调用
+pub fn set_tool_window(raw: isize) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    };
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd(raw), GWL_EXSTYLE);
+        let style = (style | WS_EX_TOOLWINDOW.0 as isize) & !(WS_EX_APPWINDOW.0 as isize);
+        SetWindowLongPtrW(hwnd(raw), GWL_EXSTYLE, style);
+    }
+}
+
 pub fn hide(raw: isize) {
     unsafe {
         let _ = ShowWindow(hwnd(raw), SW_HIDE);

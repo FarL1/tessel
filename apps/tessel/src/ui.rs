@@ -169,6 +169,8 @@ pub struct Popup {
     placed_at: Option<(i32, i32)>,
     /// 用户拖动后的位置，下次唤起时沿用
     user_pos: Option<(i32, i32)>,
+    /// 只用于下一次显示的位置（从设置窗口返回时）
+    next_pos: Option<(i32, i32)>,
     /// 打开中的动作菜单（Ctrl+K）
     menu: Option<ActionMenu>,
     menu_search: Entity<InputState>,
@@ -286,6 +288,7 @@ impl Popup {
             )),
             placed_at: None,
             user_pos: None,
+            next_pos: None,
             menu: None,
             menu_search,
             toast: None,
@@ -449,6 +452,11 @@ impl Popup {
         }
     }
 
+    /// 弹窗的窗口句柄（隐藏时也有效）
+    pub fn hwnd(&self) -> isize {
+        self.hwnd
+    }
+
     /// 弹窗正在显示时返回它的窗口句柄（设置窗口要在它的位置打开）
     pub fn visible_hwnd(&self) -> Option<isize> {
         self.visible.then_some(self.hwnd)
@@ -458,22 +466,23 @@ impl Popup {
         self.user_pos = None;
     }
 
-    /// 从设置窗口返回：设置窗口是摆在弹窗正上方打开的，用户拖动过它的话，
-    /// 弹窗就挪到它现在的位置，当作用户拖动了弹窗（以后也记住这个位置）。没拖动过则不变。
-    pub fn take_position_of(&mut self, other: isize) {
+    /// 从设置窗口返回：弹窗出现在设置窗口现在的位置，看起来是同一个窗口在翻页。
+    /// `remember`：用户拖动过设置窗口，当作拖动了弹窗，以后也用这个位置；
+    /// 否则只有这一次，下次按热键还在原来的地方弹出。
+    pub fn take_position_of(&mut self, other: isize, remember: bool) {
         let Some(target) = win::pos_centered_over(self.hwnd, other) else {
             return;
         };
-        // 居中换算有 1px 的取整误差，差几个像素不算拖动过
-        let moved = win::window_pos(self.hwnd)
-            .is_none_or(|(x, y)| (x - target.0).abs() > 4 || (y - target.1).abs() > 4);
-        if moved {
+        if remember {
             self.user_pos = Some(target);
-            // 弹窗可能还显示着（被设置窗口挡住），直接挪过去
-            if self.visible {
-                win::move_to(self.hwnd, target);
-                self.placed_at = Some(target);
-            }
+        } else {
+            self.next_pos = Some(target);
+        }
+        // 弹窗可能还显示着（被设置窗口挡住），直接挪过去
+        if self.visible {
+            win::move_to(self.hwnd, target);
+            self.placed_at = Some(target);
+            self.next_pos = None;
         }
     }
 
@@ -511,7 +520,8 @@ impl Popup {
         self.refresh(cx);
 
         // 用户拖动过就沿用那个位置（如果还在某块屏幕上），否则放在鼠标所在屏幕的偏上位置
-        match self.user_pos.filter(|&p| win::is_on_screen(p)) {
+        let once = self.next_pos.take().filter(|&p| win::is_on_screen(p));
+        match once.or(self.user_pos.filter(|&p| win::is_on_screen(p))) {
             Some(pos) => win::move_to(self.hwnd, pos),
             None => {
                 self.user_pos = None;

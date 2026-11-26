@@ -1265,13 +1265,14 @@ impl Render for SettingsView {
 
 /// 打开设置窗口，返回窗口句柄和视图
 /// `over`：在这个窗口（正在显示的弹窗）的位置打开，看起来是弹窗变成了设置窗口；
-/// 为空时放在鼠标所在屏幕的中间
+/// 为空时放在鼠标所在屏幕的中间。`same_size_as`：弹窗（隐藏时也行），设置窗口和它一样大
 pub fn open(
     dir: PathBuf,
     tx: async_channel::Sender<AppCommand>,
     config: Config,
     autostart: bool,
     over: Option<isize>,
+    same_size_as: isize,
     cx: &mut App,
 ) -> Option<(AnyWindowHandle, Entity<SettingsView>)> {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -1283,15 +1284,22 @@ pub fn open(
         window_min_size: Some(size(px(560.), px(480.))),
         kind: WindowKind::Normal,
         window_background: WindowBackgroundAppearance::MicaBackdrop,
+        // 以隐藏状态创建：用 show: true 的话，GPUI 会先把窗口显示在屏幕中间，
+        // 我们再隐藏、挪到弹窗的位置，用户会看到屏幕中间闪一下。
+        // （show: false 时 GPUI 会把初始位置留到 window.activate_window() 时再应用，
+        // 所以这个窗口只用 Win32 显示和激活，不调用 activate_window。）
+        show: false,
         ..Default::default()
     };
     let mut hwnd = None;
     let opened = gpui_kit::open_window(options, cx, |window, cx| {
         window.set_window_title(tr("Tessel 设置", "Tessel Settings"));
-        // 先隐藏，摆好位置再显示（首帧之前，不会在屏幕中间闪一下）
+        // 摆好位置再显示；和弹窗一样不在任务栏上显示按钮
         if let Ok(RawWindowHandle::Win32(h)) = window.window_handle().map(|h| h.as_raw()) {
             let raw = h.hwnd.get();
-            crate::win::hide(raw);
+            crate::win::set_tool_window(raw);
+            // 隐藏创建时窗口还是系统默认大小（GPUI 把大小留到 activate 时才设），先设成和弹窗一样大
+            crate::win::copy_size(raw, same_size_as);
             crate::win::place_over(raw, over);
             hwnd = Some(raw);
         }

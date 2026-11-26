@@ -31,13 +31,28 @@ if (-not (Get-Command vpk -ErrorAction SilentlyContinue)) {
 
 Push-Location $repo
 try {
+    $meta = cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
     if (-not $NoBuild) {
-        Write-Host '==> 编译 release 版'
-        cargo build -p tessel -p tessel-cli -p tessel-setup --release
-        if ($LASTEXITCODE -ne 0) { throw '编译失败' }
+        # 编译产物里会带上依赖库的源码路径（出错信息用），例如 C:\Users\<用户名>\.cargo\registry\...、
+        # 编译目录。发布的文件不应该带上打包这台电脑的用户名和目录结构，统一改写成中性的前缀。
+        $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE '.cargo' }
+        $remaps = @(
+            "--remap-path-prefix=$cargoHome=cargo",
+            "--remap-path-prefix=$($meta.target_directory)=target",
+            "--remap-path-prefix=$($meta.target_directory.Replace('\', '/'))=target",
+            "--remap-path-prefix=$repo=tessel"
+        )
+        # 用 CARGO_ENCODED_RUSTFLAGS（0x1F 分隔）：路径里有空格也不会被拆开
+        $oldFlags = $env:CARGO_ENCODED_RUSTFLAGS
+        $env:CARGO_ENCODED_RUSTFLAGS = $remaps -join [char]0x1F
+        try {
+            Write-Host '==> 编译 release 版'
+            cargo build -p tessel -p tessel-cli -p tessel-setup --release
+            if ($LASTEXITCODE -ne 0) { throw '编译失败' }
+        }
+        finally { $env:CARGO_ENCODED_RUSTFLAGS = $oldFlags }
     }
 
-    $meta = cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
     $version = ($meta.packages | Where-Object name -eq 'tessel').version
     $built = Join-Path $meta.target_directory 'release\tessel.exe'
     $cli = Join-Path $meta.target_directory 'release\tessel-cli.exe'
