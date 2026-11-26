@@ -508,6 +508,7 @@ impl ActionMenu {
         &self,
         search: &Entity<InputState>,
         p: &Palette,
+        window_size: Size<Pixels>,
         on_pick: impl Fn(usize, &mut Window, &mut App) + 'static,
     ) -> impl IntoElement {
         let p = *p;
@@ -591,7 +592,8 @@ impl ActionMenu {
                 None => d.right(px(14.)).bottom(px(46.)).max_h(px(400.)),
                 // 鼠标位置：横向不超出窗口；在上半部分点的向下展开，下半部分点的向上展开
                 Some(at) => {
-                    let (win_w, win_h) = (design::WINDOW_W, design::WINDOW_H);
+                    let (win_w, win_h) =
+                        (f32::from(window_size.width), f32::from(window_size.height));
                     let left = f32::from(at.x).clamp(8., win_w - 8. - MENU_W);
                     let y = f32::from(at.y);
                     let d = d.left(px(left));

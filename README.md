@@ -152,7 +152,7 @@ It never takes the focus away from what you're typing. You can turn it off in Se
 
 **Mouse**: click to select, double-click to paste. Right-click any item (or the preview) for the action menu. Hover over a row for Pin and More buttons. The preview has buttons for copy, edit, note, pin and open; you can select part of its text and copy it with `Ctrl+C`. The key hints in the footer are clickable too.
 
-Also: drag the empty space at the top to move the window (the position is remembered); click "● Recording" to pause recording; the tray menu has pause, start with Windows, settings, reset window position and clear history.
+Also: drag the empty space at the top to move the window and drag its edges to resize it (both are remembered); click "● Recording" to pause recording; the tray menu has pause, start with Windows, settings, reset window position and size, and clear history.
 
 ## Settings
 

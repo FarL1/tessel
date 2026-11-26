@@ -184,6 +184,10 @@ pub struct Popup {
     menu_search: Entity<InputState>,
     /// 复制提示、粘贴队列进度
     toast: Option<Entity<Toast>>,
+    /// 用户拖动改变的弹窗大小存在这个文件里，下次启动沿用
+    size_file: Option<std::path::PathBuf>,
+    /// 上次保存的大小（逻辑像素）
+    saved_size: Option<(f32, f32)>,
     /// 粘贴队列（记录的 uuid），每按一次队列热键粘贴最前面的一条
     queue: VecDeque<String>,
     /// 还没处理的队列热键次数（等用户松开修饰键期间又按了几次）
@@ -304,6 +308,8 @@ impl Popup {
             menu: None,
             menu_search,
             toast: None,
+            size_file: None,
+            saved_size: None,
             queue: VecDeque::new(),
             queue_requests: 0,
             queue_busy: false,
@@ -424,6 +430,41 @@ impl Popup {
         self.toast = Some(toast);
     }
 
+    /// `saved`：启动时从文件读到的大小（已经用作窗口的初始大小）
+    pub fn set_size_file(&mut self, path: std::path::PathBuf, saved: Option<(f32, f32)>) {
+        self.size_file = Some(path);
+        self.saved_size = saved;
+    }
+
+    /// 收起时：用户拖动改变过大小的话存下来
+    fn save_size(&mut self) {
+        let Some(path) = &self.size_file else {
+            return;
+        };
+        let Some(now) = win::client_logical_size(self.hwnd) else {
+            return;
+        };
+        let default = (design::WINDOW_W, design::WINDOW_H);
+        let same =
+            |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 1.0 && (a.1 - b.1).abs() < 1.0;
+        if same(now, self.saved_size.unwrap_or(default)) {
+            return;
+        }
+        let result = if same(now, default) {
+            // 拖回了默认大小：删掉文件，以后跟着默认值走
+            std::fs::remove_file(path).or_else(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => Ok(()),
+                _ => Err(e),
+            })
+        } else {
+            std::fs::write(path, format!("{:.0}x{:.0}\n", now.0, now.1))
+        };
+        match result {
+            Ok(()) => self.saved_size = Some(now),
+            Err(e) => log_line(format!("[size] ⚠ 保存窗口大小失败：{e}")),
+        }
+    }
+
     /// 自动检查发现新版本：提示一次（去托盘菜单下载）
     pub fn show_update_notice(&self, version: &str, cx: &mut Context<Self>) {
         self.show_toast(
@@ -474,14 +515,25 @@ impl Popup {
         self.visible.then_some(self.hwnd)
     }
 
+    /// 托盘"重置窗口位置和大小"：回到默认位置（鼠标所在屏幕的偏上位置）和默认大小
     pub fn reset_position(&mut self) {
         self.user_pos = None;
+        win::set_client_logical_size(self.hwnd, design::WINDOW_W, design::WINDOW_H);
+        if let Some(path) = &self.size_file
+            && let Err(e) = std::fs::remove_file(path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            log_line(format!("[size] ⚠ 删除保存的窗口大小失败：{e}"));
+        }
+        self.saved_size = None;
     }
 
     /// 从设置窗口返回：弹窗出现在设置窗口现在的位置，看起来是同一个窗口在翻页。
     /// `remember`：用户拖动过设置窗口，当作拖动了弹窗，以后也用这个位置；
     /// 否则只有这一次，下次按热键还在原来的地方弹出。
     pub fn take_position_of(&mut self, other: isize, remember: bool) {
+        // 设置窗口是按弹窗的大小打开的；用户改过它的大小，弹窗也跟着变（看起来是同一个窗口）
+        win::copy_size(self.hwnd, other);
         let Some(target) = win::pos_centered_over(self.hwnd, other) else {
             return;
         };
@@ -586,6 +638,7 @@ impl Popup {
             return;
         }
         self.remember_position();
+        self.save_size();
         self.visible = false;
         self.menu = None;
         // 没保存的修改直接丢弃（点到外面、按热键关闭时）
@@ -2988,8 +3041,9 @@ impl Popup {
 }
 
 impl Render for Popup {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = Palette::new(cx.theme().is_dark());
+        let window_size = window.viewport_size();
 
         // 选中项变化时读取它的完整内容（列表里的内容是截断过的）
         let selected_uuid = self.items.get(self.selected).map(|c| c.uuid.clone());
@@ -3010,9 +3064,14 @@ impl Render for Popup {
             .map(|uuid| self.render_note(uuid, &p));
         let menu = self.menu.as_ref().map(|menu| {
             let view = cx.entity().downgrade();
-            menu.render(&self.menu_search, &p, move |pos, window, cx| {
-                let _ = view.update(cx, |this, cx| this.pick_menu_entry(pos, window, cx));
-            })
+            menu.render(
+                &self.menu_search,
+                &p,
+                window_size,
+                move |pos, window, cx| {
+                    let _ = view.update(cx, |this, cx| this.pick_menu_entry(pos, window, cx));
+                },
+            )
         });
 
         // 虚拟列表：只渲染可见的那几行，历史再多滚动也流畅

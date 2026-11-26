@@ -219,7 +219,7 @@ fn set_tray_texts(items: &TrayItems, hotkey_label: &str) {
     items.settings.set_text(tr("设置…", "Settings…"));
     items
         .reset
-        .set_text(tr("重置窗口位置", "Reset window position"));
+        .set_text(tr("重置窗口位置和大小", "Reset window position and size"));
     items
         .clear
         .set_text(tr("清空历史（保留收藏）…", "Clear history (keep pinned)…"));
@@ -523,6 +523,18 @@ fn update_tray_hotkey(
     }
 }
 
+/// 弹窗大小（用户拖动边框改过的话），内容形如 `820x560`（逻辑像素）
+const POPUP_SIZE_FILE: &str = "window-size.txt";
+
+/// 读取保存的弹窗大小；文件不存在、格式不对时返回 `None`，小于最小尺寸的按最小尺寸
+fn read_popup_size(path: &std::path::Path) -> Option<(f32, f32)> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let (w, h) = text.trim().split_once('x')?;
+    let (w, h): (f32, f32) = (w.trim().parse().ok()?, h.trim().parse().ok()?);
+    let fit = |v: f32, min: f32| (v.is_finite() && v > 0.0).then(|| v.clamp(min, 10_000.0));
+    Some((fit(w, design::MIN_W)?, fit(h, design::MIN_H)?))
+}
+
 /// GPUI 窗口对应的 Win32 窗口句柄
 fn window_hwnd(handle: AnyWindowHandle, cx: &mut AsyncApp) -> Option<isize> {
     handle
@@ -740,8 +752,11 @@ fn main() {
                 _ => WindowBackgroundAppearance::MicaBackdrop,
             };
 
-            let bounds =
-                Bounds::centered(None, size(px(design::WINDOW_W), px(design::WINDOW_H)), cx);
+            // 用户上次拖动设置的大小（没有的话用默认大小）
+            let size_file = dir.join(POPUP_SIZE_FILE);
+            let saved_size = read_popup_size(&size_file);
+            let (w, h) = saved_size.unwrap_or((design::WINDOW_W, design::WINDOW_H));
+            let bounds = Bounds::centered(None, size(px(w), px(h)), cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 // 不要设置 GPUI 的 titlebar：一旦设置，GPUI 就会画出一条系统标题栏。
@@ -753,7 +768,9 @@ fn main() {
                 // 打乱我们自己的显示和焦点流程。
                 show: true,
                 focus: false,
-                is_resizable: false,
+                // PopUp 窗口本身没有调整大小的边框，创建后用 win::make_resizable 加上
+                is_resizable: true,
+                window_min_size: Some(size(px(design::MIN_W), px(design::MIN_H))),
                 window_background: background,
                 ..Default::default()
             };
@@ -773,6 +790,7 @@ fn main() {
                     _ => panic!("expected a Win32 window handle"),
                 };
                 win::hide(hwnd);
+                win::make_resizable(hwnd);
                 win::round_corners(hwnd);
                 win::set_title(hwnd, &format!("{APP_NAME} {APP_NAME_ZH}"));
                 cx.new(|cx| {
@@ -790,6 +808,7 @@ fn main() {
             })
             .expect("failed to open window");
 
+            popup.update(cx, |this, _| this.set_size_file(size_file, saved_size));
             if let Some(err) = startup_error {
                 popup.update(cx, |this, cx| this.set_config_error(err, cx));
             }

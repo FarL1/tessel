@@ -175,6 +175,97 @@ pub fn set_tool_window(raw: isize) {
     }
 }
 
+/// 给无边框的弹窗加上可以拖动改变大小的边框。
+/// GPUI 的 PopUp 窗口没有 WS_THICKFRAME，只能靠自己加；加了之后左、右、下三边的调整区域由
+/// 系统提供（在窗口外侧，看不见），上边由 GPUI 的命中测试提供（需要 `is_resizable: true`）。
+pub fn make_resizable(raw: isize) {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GWL_STYLE, GetWindowLongPtrW, SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOZORDER,
+        SetWindowLongPtrW, WS_THICKFRAME,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetClientRect, PostMessageW, SPI_SETNONCLIENTMETRICS, WM_SETTINGCHANGE,
+    };
+    unsafe {
+        let mut before = RECT::default();
+        let _ = GetClientRect(hwnd(raw), &mut before);
+        let style = GetWindowLongPtrW(hwnd(raw), GWL_STYLE);
+        SetWindowLongPtrW(hwnd(raw), GWL_STYLE, style | WS_THICKFRAME.0 as isize);
+        let _ = SetWindowPos(
+            hwnd(raw),
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+        // 边框占掉了一部分客户区：把窗口加大，让内容区保持创建时的大小
+        let (mut window, mut after) = (RECT::default(), RECT::default());
+        if GetWindowRect(hwnd(raw), &mut window).is_ok()
+            && GetClientRect(hwnd(raw), &mut after).is_ok()
+        {
+            let w = window.right - window.left + (before.right - after.right);
+            let h = window.bottom - window.top + (before.bottom - after.bottom);
+            let _ = SetWindowPos(
+                hwnd(raw),
+                None,
+                0,
+                0,
+                w,
+                h,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+        // GPUI 只在创建窗口、DPI 变化、系统设置变化时重新计算边框宽度（最小尺寸要加上它）。
+        // 发一条"非客户区尺寸变了"的设置变化消息，让它按新的边框重新算
+        let _ = PostMessageW(
+            Some(hwnd(raw)),
+            WM_SETTINGCHANGE,
+            WPARAM(SPI_SETNONCLIENTMETRICS.0 as usize),
+            LPARAM(0),
+        );
+    }
+}
+
+/// 客户区大小（逻辑像素，按窗口所在显示器的缩放换算）
+pub fn client_logical_size(raw: isize) -> Option<(f32, f32)> {
+    use windows::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+    let mut rect = RECT::default();
+    unsafe { GetClientRect(hwnd(raw), &mut rect) }.ok()?;
+    let scale = unsafe { GetDpiForWindow(hwnd(raw)) }.max(96) as f32 / 96.0;
+    let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
+    (w > 0 && h > 0).then(|| (w as f32 / scale, h as f32 / scale))
+}
+
+/// 把窗口的客户区设成指定的逻辑大小（边框另算），不移动
+pub fn set_client_logical_size(raw: isize, w: f32, h: f32) {
+    use windows::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, SWP_NOMOVE, SWP_NOZORDER};
+    let (mut window, mut client) = (RECT::default(), RECT::default());
+    unsafe {
+        if GetWindowRect(hwnd(raw), &mut window).is_err()
+            || GetClientRect(hwnd(raw), &mut client).is_err()
+        {
+            return;
+        }
+        let scale = GetDpiForWindow(hwnd(raw)).max(96) as f32 / 96.0;
+        let frame_w = (window.right - window.left) - client.right;
+        let frame_h = (window.bottom - window.top) - client.bottom;
+        let _ = SetWindowPos(
+            hwnd(raw),
+            None,
+            0,
+            0,
+            (w * scale).round() as i32 + frame_w,
+            (h * scale).round() as i32 + frame_h,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+}
+
 pub fn hide(raw: isize) {
     unsafe {
         let _ = ShowWindow(hwnd(raw), SW_HIDE);

@@ -17,6 +17,9 @@ pub const SHOW_OFFSET: f32 = 10.0;
 /// 窗口逻辑尺寸
 pub const WINDOW_W: f32 = 780.0;
 pub const WINDOW_H: f32 = 520.0;
+/// 拖动改变大小时的最小尺寸（弹窗和设置窗口共用，从设置返回时两边大小一致）
+pub const MIN_W: f32 = 640.0;
+pub const MIN_H: f32 = 440.0;
 
 pub const RADIUS_LG: Pixels = px(12.);
 pub const RADIUS_MD: Pixels = px(8.);

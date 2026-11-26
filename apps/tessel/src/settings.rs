@@ -1281,7 +1281,7 @@ pub fn open(
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: Some(TitleBar::title_bar_options()),
-        window_min_size: Some(size(px(560.), px(480.))),
+        window_min_size: Some(size(px(design::MIN_W), px(design::MIN_H))),
         kind: WindowKind::Normal,
         window_background: WindowBackgroundAppearance::MicaBackdrop,
         // 以隐藏状态创建：用 show: true 的话，GPUI 会先把窗口显示在屏幕中间，
